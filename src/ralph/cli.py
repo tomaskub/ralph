@@ -1,11 +1,21 @@
 """Command-line entry point for RALPH."""
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
 
 from ralph import __version__
+from ralph.config import (
+    DEFAULT_BASE_REF,
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_DIR,
+    build_single_repo_config,
+    derive_gitlab_project,
+    validate_init_inputs,
+    write_config,
+)
 
 app = typer.Typer(
     help="Local operator CLI for AI-agent ticket work loops.",
@@ -48,7 +58,43 @@ def callback(
 @app.command()
 def init() -> None:
     """Create local RALPH configuration."""
-    fail_unimplemented("init")
+    repo_path = Path(
+        typer.prompt("Product repo path", default=str(Path.cwd()))
+    ).expanduser()
+    worktree_root = Path(typer.prompt("Worktree root")).expanduser()
+    base_ref = typer.prompt("Base ref", default=DEFAULT_BASE_REF)
+    jira_project = typer.prompt("Jira project key").strip().upper()
+
+    errors = validate_init_inputs(
+        repo_path=repo_path,
+        worktree_root=worktree_root,
+        base_ref=base_ref,
+    )
+    if errors:
+        for error in errors:
+            console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=1)
+
+    gitlab_project = derive_gitlab_project(repo_path)
+    if gitlab_project is None:
+        gitlab_project = typer.prompt("GitLab project path").strip()
+
+    if not worktree_root.exists():
+        console.print(f"Worktree root will be created: {worktree_root}")
+        if not typer.confirm("Create worktree root?", default=True):
+            raise typer.Exit(code=1)
+        worktree_root.mkdir(parents=True, exist_ok=True)
+
+    DEFAULT_STATE_DIR.mkdir(parents=True, exist_ok=True)
+    config = build_single_repo_config(
+        repo_path=repo_path,
+        worktree_root=worktree_root,
+        base_ref=base_ref,
+        jira_project=jira_project,
+        gitlab_project=gitlab_project,
+    )
+    write_config(config, DEFAULT_CONFIG_PATH)
+    console.print(f"[green]Wrote config:[/green] {DEFAULT_CONFIG_PATH}")
 
 
 @app.command()
