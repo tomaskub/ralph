@@ -13,3 +13,8 @@ Use the default five-label triage vocabulary: `needs-triage`, `needs-info`, `rea
 ### Domain docs
 
 This repo uses a single-context domain-doc layout. See `docs/agents/domain.md`.
+
+## Testing
+
+Use `uv run ruff check .` for linting.
+Use `uv run pytest` for the test suite.

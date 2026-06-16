@@ -13,8 +13,17 @@ from ralph.config import (
     DEFAULT_STATE_DIR,
     build_single_repo_config,
     derive_gitlab_project,
+    load_config,
     validate_init_inputs,
     write_config,
+)
+from ralph.git import branch_name_for_ticket, worktree_path_for_branch
+from ralph.jira import (
+    JiraFetchError,
+    branch_kind_for_ticket,
+    fetch_ticket_json,
+    normalize_ticket,
+    validate_ticket,
 )
 
 app = typer.Typer(
@@ -110,12 +119,90 @@ def start(
         bool,
         typer.Option("--dry-run", help="Plan the run without writing anything."),
     ] = False,
+    confirm_ambiguous_dependencies: Annotated[
+        bool,
+        typer.Option(
+            "--confirm-ambiguous-dependencies",
+            help=(
+                "Proceed when Jira dependency information is unavailable "
+                "or ambiguous."
+            ),
+        ),
+    ] = False,
+    allow_blocked: Annotated[
+        bool,
+        typer.Option(
+            "--allow-blocked",
+            help="Proceed even when Jira reports unresolved blockers.",
+        ),
+    ] = False,
 ) -> None:
     """Start an isolated ticket worktree and launch the configured agent."""
-    suffix = f" {ticket}"
+    config = load_config(DEFAULT_CONFIG_PATH)
+    repo = config.repos[config.default_repo]
+    if repo.jira_project and not ticket.startswith(f"{repo.jira_project}-"):
+        console.print(
+            f"[red]Ticket {ticket} is outside Jira project {repo.jira_project}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        raw = fetch_ticket_json(
+            ticket,
+            issue_json_command=config.jira.issue_json_command,
+        )
+    except JiraFetchError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    normalized_ticket = normalize_ticket(raw)
+    result = validate_ticket(
+        normalized_ticket,
+        repo=repo,
+        branch_kinds=config.branch_kinds,
+    )
+    for error in result.errors:
+        console.print(f"[red]{error}[/red]")
+
+    if result.dependency.unresolved_blockers and not allow_blocked:
+        blockers = ", ".join(
+            f"{blocker.key} ({blocker.status or 'unknown status'})"
+            for blocker in result.dependency.unresolved_blockers
+        )
+        console.print(f"[red]Ticket has unresolved blockers: {blockers}[/red]")
+
+    if result.dependency.requires_confirmation and not confirm_ambiguous_dependencies:
+        console.print(
+            "[yellow]Dependency information requires manual confirmation: "
+            f"{result.dependency.reason}[/yellow]"
+        )
+
+    dependency_blocked = (
+        bool(result.dependency.unresolved_blockers) and not allow_blocked
+    )
+    dependency_blocked = dependency_blocked or (
+        result.dependency.requires_confirmation
+        and not confirm_ambiguous_dependencies
+    )
+    if result.errors or dependency_blocked:
+        raise typer.Exit(code=1)
+
+    branch_kind = branch_kind_for_ticket(normalized_ticket, config.branch_kinds)
+    branch_name = branch_name_for_ticket(normalized_ticket, branch_kind)
+    worktree_path = worktree_path_for_branch(repo.worktree_root, branch_name)
+
     if dry_run:
-        suffix += " --dry-run"
-    fail_unimplemented(f"start{suffix}")
+        console.print("[bold]Dry run[/bold]")
+        console.print(f"Ticket: {normalized_ticket.key}")
+        console.print(f"Summary: {normalized_ticket.summary}")
+        console.print("Dependency/status decision: allowed")
+        console.print(f"Planned branch: {branch_name}")
+        console.print(f"Planned worktree path: {worktree_path}")
+        console.print(f"Planned Jira command: {config.jira.issue_json_command}")
+        console.print("[green]No files were written.[/green]")
+        return
+
+    fail_unimplemented(f"start {ticket}")
 
 
 @app.command()

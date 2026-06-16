@@ -35,6 +35,7 @@ def test_load_config_reads_single_default_repo(tmp_path: Path) -> None:
     assert repo.git_remote == "origin"
     assert repo.jira_project == "YT"
     assert repo.gitlab_project == "group/product"
+    assert loaded.jira.issue_json_command == "jira issue view {ticket} --format json"
 
 
 def test_config_to_toml_contains_expected_single_repo_shape() -> None:
@@ -55,6 +56,8 @@ def test_config_to_toml_contains_expected_single_repo_shape() -> None:
     assert 'worktree_root = "/workspace/product-worktrees"' in rendered
     assert 'git_remote = "origin"' in rendered
     assert "[tools]" in rendered
+    assert "[jira]" in rendered
+    assert 'issue_json_command = "jira issue view {ticket} --format json"' in rendered
     assert "[branch_kinds]" in rendered
 
 

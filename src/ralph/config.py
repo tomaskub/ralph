@@ -21,6 +21,11 @@ class ToolConfig:
 
 
 @dataclass(frozen=True)
+class JiraConfig:
+    issue_json_command: str = "jira issue view {ticket} --format json"
+
+
+@dataclass(frozen=True)
 class RepoConfig:
     name: str
     repo_path: Path
@@ -36,6 +41,7 @@ class RalphConfig:
     default_repo: str
     repos: dict[str, RepoConfig]
     tools: ToolConfig = field(default_factory=ToolConfig)
+    jira: JiraConfig = field(default_factory=JiraConfig)
     branch_kinds: dict[str, str] = field(
         default_factory=lambda: {
             "Task": "feature",
@@ -73,11 +79,18 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> RalphConfig:
         gitlab=tools_data.get("gitlab", ToolConfig.gitlab),
         agent=tools_data.get("agent", ToolConfig.agent),
     )
+    jira_data = data.get("jira", {})
+    jira = JiraConfig(
+        issue_json_command=str(
+            jira_data.get("issue_json_command", JiraConfig.issue_json_command)
+        )
+    )
 
     return RalphConfig(
         default_repo=default_repo,
         repos=repos,
         tools=tools,
+        jira=jira,
         branch_kinds=data.get(
             "branch_kinds",
             {
@@ -122,6 +135,12 @@ def config_to_toml(config: RalphConfig) -> str:
             f'jira = "{_toml_escape(config.tools.jira)}"',
             f'gitlab = "{_toml_escape(config.tools.gitlab)}"',
             f'agent = "{_toml_escape(config.tools.agent)}"',
+            "",
+            "[jira]",
+            (
+                'issue_json_command = '
+                f'"{_toml_escape(config.jira.issue_json_command)}"'
+            ),
             "",
             "[branch_kinds]",
         ]
