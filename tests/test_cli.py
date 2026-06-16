@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 from ralph import __version__
 from ralph.cli import app
-from ralph.config import load_config
+from ralph.config import build_single_repo_config, load_config, write_config
 
 runner = CliRunner()
 
@@ -32,11 +32,67 @@ def test_unimplemented_commands_fail_clearly() -> None:
     assert "ralph doctor is not implemented yet" in result.output
 
 
-def test_start_accepts_ticket_and_dry_run_flag() -> None:
+def test_start_rejects_ticket_outside_configured_jira_project(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+
+    result = runner.invoke(app, ["start", "OTHER-123", "--dry-run"])
+
+    assert result.exit_code == 1
+    assert "Ticket OTHER-123 is outside Jira project YT" in result.output
+
+
+def test_start_dry_run_fetches_and_validates_jira_ticket(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "ralph.cli.fetch_ticket_json",
+        lambda ticket, *, issue_json_command: {
+            "key": ticket,
+            "fields": {
+                "summary": "Add cache",
+                "description": "Cache the summary.",
+                "issuetype": {"name": "Task"},
+                "status": {"name": "To Do"},
+                "issuelinks": [],
+            },
+        },
+    )
+
     result = runner.invoke(app, ["start", "YT-123", "--dry-run"])
 
-    assert result.exit_code == 2
-    assert "ralph start YT-123 --dry-run is not implemented yet" in result.output
+    assert result.exit_code == 0
+    assert "Summary: Add cache" in result.output
+    assert "Planned branch: feature/YT-123-add-cache" in result.output
+    assert "No files were written." in result.output
 
 
 def test_init_writes_config_without_modifying_product_repo(
