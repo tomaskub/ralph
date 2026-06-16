@@ -1,11 +1,12 @@
 from pathlib import Path
 
-from tests.test_config import make_git_repo
 from typer.testing import CliRunner
 
 from ralph import __version__
 from ralph.cli import app
 from ralph.config import build_single_repo_config, load_config, write_config
+from ralph.doctor import DoctorCheck
+from tests.test_config import make_git_repo
 
 runner = CliRunner()
 
@@ -26,10 +27,46 @@ def test_mvp_commands_are_registered() -> None:
 
 
 def test_unimplemented_commands_fail_clearly() -> None:
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 2
-    assert "ralph doctor is not implemented yet" in result.output
+    assert "ralph status is not implemented yet" in result.output
+
+
+def test_doctor_renders_checks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(
+        "ralph.cli.run_doctor_checks",
+        lambda config: [
+            DoctorCheck(
+                name="git installed",
+                ok=True,
+                detail="/usr/bin/git",
+                action=None,
+            )
+        ],
+    )
+
+    result = runner.invoke(app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "RALPH doctor" in result.output
+    assert "git installed" in result.output
 
 
 def test_start_rejects_ticket_outside_configured_jira_project(
