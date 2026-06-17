@@ -138,6 +138,111 @@ def remote_branch_exists(
     )
 
 
+def current_branch(
+    worktree_path: Path,
+    *,
+    runner: CommandRunner | None = None,
+) -> str:
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "branch", "--show-current"], cwd=worktree_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not determine current branch{suffix}")
+    return result.stdout.strip()
+
+
+def commits_ahead_count(
+    worktree_path: Path,
+    base_ref: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> int:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "rev-list", "--count", f"{base_ref}..HEAD"],
+        cwd=worktree_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not count commits ahead of {base_ref}{suffix}")
+    return int(result.stdout.strip())
+
+
+def committed_paths(
+    worktree_path: Path,
+    base_ref: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> list[str]:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "diff", "--name-only", f"{base_ref}..HEAD"],
+        cwd=worktree_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not inspect committed diff{suffix}")
+    return [line for line in result.stdout.splitlines() if line]
+
+
+def upstream_name(
+    worktree_path: Path,
+    *,
+    runner: CommandRunner | None = None,
+) -> str | None:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+        cwd=worktree_path,
+    )
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return None
+
+
+def upstream_divergence(
+    worktree_path: Path,
+    upstream: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> tuple[int, int]:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "rev-list", "--left-right", "--count", f"{upstream}...HEAD"],
+        cwd=worktree_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not compare upstream {upstream}{suffix}")
+    behind, ahead = result.stdout.strip().split()
+    return int(behind), int(ahead)
+
+
+def push_branch(
+    worktree_path: Path,
+    remote: str,
+    branch_name: str,
+    *,
+    has_upstream: bool,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    args = (
+        ["git", "push"]
+        if has_upstream
+        else ["git", "push", "-u", remote, branch_name]
+    )
+    result = runner.run(args, cwd=worktree_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not push branch {branch_name}{suffix}")
+
+
 class GitPlanError(RuntimeError):
     """Raised when read-only Git planning checks fail."""
 
