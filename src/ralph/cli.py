@@ -3,6 +3,8 @@
 import json
 import re
 import shlex
+import urllib.error
+import urllib.request
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -68,6 +70,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console(width=160)
+PACKAGE_NAME = "ralph-loop"
+DEFAULT_INSTALL_REPO_URL = "https://github.com/tomaskub/ralph.git"
+GITHUB_LATEST_RELEASE_URL = (
+    "https://api.github.com/repos/tomaskub/ralph/releases/latest"
+)
+SEMVER_TAG_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
 class NotImplementedCommand(RuntimeError):
@@ -98,6 +106,120 @@ def callback(
     if version:
         console.print(f"ralph {__version__}")
         raise typer.Exit()
+
+
+@app.command()
+def update(
+    repo_url: Annotated[
+        str,
+        typer.Option(
+            "--repo-url",
+            help="Git repository URL to install RALPH from.",
+        ),
+    ] = DEFAULT_INSTALL_REPO_URL,
+    tag: Annotated[
+        str | None,
+        typer.Option(
+            "--tag",
+            help="Install this exact Git tag instead of discovering the latest tag.",
+        ),
+    ] = None,
+) -> None:
+    """Update the installed RALPH CLI from the latest GitHub release tag."""
+    runner = CommandRunner()
+    selected_tag = tag or _discover_latest_install_tag(runner, repo_url)
+    if selected_tag is None:
+        console.print("[red]RALPH update failed.[/red]")
+        console.print(
+            "Could not find a stable semver GitHub release or tag, "
+            "for example v0.1.0."
+        )
+        console.print(
+            f"Install manually once a tag exists: pipx install --force "
+            f"{shlex.quote(f'git+{repo_url}@<tag>')}"
+        )
+        raise typer.Exit(code=1)
+
+    install_source = f"git+{repo_url}@{selected_tag}"
+    args = ("pipx", "install", "--force", install_source)
+    console.print(f"Updating RALPH with: {shlex.join(args)}")
+    result = runner.run(args)
+    if result.returncode != 0:
+        console.print("[red]RALPH update failed.[/red]")
+        output = result.stderr.strip() or result.stdout.strip()
+        if output:
+            console.print(output)
+        console.print(f"Run manually: {shlex.join(args)}")
+        raise typer.Exit(code=result.returncode)
+
+    output = result.stdout.strip()
+    if output:
+        console.print(output)
+    console.print(f"[green]RALPH is up to date at {selected_tag}.[/green]")
+
+
+def _discover_latest_install_tag(
+    runner: CommandRunner,
+    repo_url: str,
+) -> str | None:
+    release_tag = _latest_github_release_tag()
+    if release_tag and _semver_key(release_tag):
+        return release_tag
+
+    result = runner.run(("git", "ls-remote", "--tags", repo_url))
+    if result.returncode != 0:
+        output = result.stderr.strip() or result.stdout.strip()
+        if output:
+            console.print(output)
+        return None
+
+    return _latest_semver_tag(_tags_from_ls_remote(result.stdout))
+
+
+def _latest_github_release_tag() -> str | None:
+    request = urllib.request.Request(
+        GITHUB_LATEST_RELEASE_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": PACKAGE_NAME,
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+
+    tag_name = payload.get("tag_name")
+    if isinstance(tag_name, str):
+        return tag_name
+    return None
+
+
+def _tags_from_ls_remote(output: str) -> list[str]:
+    tags: list[str] = []
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 2 or not parts[1].startswith("refs/tags/"):
+            continue
+        tag = parts[1].removeprefix("refs/tags/").removesuffix("^{}")
+        if tag not in tags:
+            tags.append(tag)
+    return tags
+
+
+def _latest_semver_tag(tags: list[str]) -> str | None:
+    semver_tags = [(key, tag) for tag in tags if (key := _semver_key(tag))]
+    if not semver_tags:
+        return None
+    return max(semver_tags)[1]
+
+
+def _semver_key(tag: str) -> tuple[int, int, int] | None:
+    match = SEMVER_TAG_PATTERN.match(tag)
+    if match is None:
+        return None
+    return tuple(int(part) for part in match.groups())
 
 
 @app.command()
