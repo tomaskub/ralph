@@ -25,6 +25,7 @@ class Ticket:
 class RunState:
     ticket_key: str
     ticket: Ticket
+    repo_name: str
     repo_path: Path
     worktree_path: Path
     branch_name: str
@@ -33,5 +34,6 @@ class RunState:
     status: RunStatus
     created_at: datetime
     updated_at: datetime
+    command_log: list[str] = field(default_factory=list)
     mr_url: str | None = None
-
+    error: str | None = None
