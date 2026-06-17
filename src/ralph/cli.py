@@ -529,7 +529,9 @@ def _render_start_dry_run(
     console.print(f"Resolved base SHA: {base_sha}")
     console.print("Planned commands:")
     console.print(f"  {jira_command}")
-    console.print(f"  git worktree add {worktree_path} {branch_name}")
+    console.print(
+        f"  git worktree add --no-track -b {branch_name} {worktree_path} {base_ref}"
+    )
     console.print(f"  {agent_command}")
     console.print("Generated file previews:")
     for path, content in _agent_file_previews(
@@ -580,7 +582,7 @@ def _start_real_run(
 ) -> None:
     command_log = [
         f"git fetch {git_remote}",
-        f"git worktree add -b {branch_name} {worktree_path} {base_ref}",
+        f"git worktree add --no-track -b {branch_name} {worktree_path} {base_ref}",
         agent_command,
     ]
     started_at = _now()

@@ -64,7 +64,16 @@ def add_worktree(
 ) -> None:
     runner = runner or CommandRunner()
     result = runner.run(
-        ["git", "worktree", "add", "-b", branch_name, str(worktree_path), base_ref],
+        [
+            "git",
+            "worktree",
+            "add",
+            "--no-track",
+            "-b",
+            branch_name,
+            str(worktree_path),
+            base_ref,
+        ],
         cwd=repo_path,
     )
     if result.returncode != 0:
