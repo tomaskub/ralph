@@ -16,6 +16,7 @@ from ralph.config import (
     write_config,
 )
 from ralph.doctor import DoctorCheck
+from ralph.git import local_branch_exists
 from ralph.models import RunState, Ticket
 from ralph.state import write_run_state
 from tests.test_config import make_git_repo, run_git
@@ -566,6 +567,194 @@ def test_finish_records_existing_mr_and_refuses_duplicate_creation(
     assert state["mr_url"] == "https://gitlab.example/mr/existing"
 
 
+def test_cleanup_requires_mr_unless_forced(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin = make_cleanup_worktree(tmp_path)
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state(
+            "YT-123",
+            "Add cache",
+            worktree,
+            "started",
+            repo_path=repo,
+        ),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    refused = runner.invoke(app, ["cleanup", "YT-123"])
+
+    assert refused.exit_code == 1
+    assert "Run must have an MR before cleanup" in refused.output
+    assert worktree.exists()
+    assert local_branch_exists(repo, "feature/YT-123-add-cache")
+
+    forced = runner.invoke(app, ["cleanup", "YT-123", "--force"], input="y\n")
+
+    assert forced.exit_code == 0
+    assert "Cleaned up local ticket work" in forced.output
+    assert not worktree.exists()
+    assert not local_branch_exists(repo, "feature/YT-123-add-cache")
+
+
+def test_cleanup_requires_confirmation_before_deleting_local_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin = make_cleanup_worktree(tmp_path)
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state(
+            "YT-123",
+            "Add cache",
+            worktree,
+            "mr-created",
+            repo_path=repo,
+            mr_url="https://gitlab.example/mr/1",
+        ),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["cleanup", "YT-123"], input="n\n")
+
+    assert result.exit_code == 1
+    assert "Cleanup cancelled" in result.output
+    assert worktree.exists()
+    assert local_branch_exists(repo, "feature/YT-123-add-cache")
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert state["status"] == "mr-created"
+
+
+def test_cleanup_removes_worktree_deletes_local_branch_and_retains_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, origin = make_cleanup_worktree(tmp_path)
+    run_git(repo, "push", "-u", "origin", "feature/YT-123-add-cache")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state(
+            "YT-123",
+            "Add cache",
+            worktree,
+            "mr-created",
+            repo_path=repo,
+            mr_url="https://gitlab.example/mr/1",
+        ),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["cleanup", "YT-123"], input="y\n")
+
+    assert result.exit_code == 0
+    assert "Cleaned up local ticket work" in result.output
+    assert not worktree.exists()
+    assert not local_branch_exists(repo, "feature/YT-123-add-cache")
+    assert run_git_stdout(
+        origin, "show-ref", "--verify", "refs/heads/feature/YT-123-add-cache"
+    )
+    state_path = state_dir / "product" / "YT-123.json"
+    assert state_path.exists()
+    state = json.loads(state_path.read_text())
+    assert state["status"] == "cleaned-up"
+    assert state["mr_url"] == "https://gitlab.example/mr/1"
+    assert state["command_log"][-2:] == [
+        f"git worktree remove {worktree}",
+        "git branch -d feature/YT-123-add-cache",
+    ]
+
+
+def test_cleanup_marks_needs_attention_when_safe_branch_delete_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin = make_cleanup_worktree(tmp_path)
+    (worktree / "code.txt").write_text("implemented\n")
+    run_git(worktree, "add", "code.txt")
+    run_git(worktree, "commit", "-m", "Implement YT-123")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state(
+            "YT-123",
+            "Add cache",
+            worktree,
+            "mr-created",
+            repo_path=repo,
+            mr_url="https://gitlab.example/mr/1",
+        ),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["cleanup", "YT-123"], input="y\n")
+
+    assert result.exit_code == 1
+    assert "Cleanup needs manual attention" in result.output
+    assert "Could not delete local branch feature/YT-123-add-cache" in result.output
+    assert not worktree.exists()
+    assert local_branch_exists(repo, "feature/YT-123-add-cache")
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert state["status"] == "needs-attention"
+    assert "Could not delete local branch" in state["error"]
+
+
 def test_init_writes_config_without_modifying_product_repo(
     tmp_path: Path,
     monkeypatch,
@@ -607,6 +796,8 @@ def run_state(
     status: str,
     *,
     base_sha: str = "abc123",
+    repo_path: Path = Path("/workspace/product"),
+    mr_url: str | None = None,
 ) -> RunState:
     ticket = Ticket(
         key=ticket_key,
@@ -619,7 +810,7 @@ def run_state(
         ticket_key=ticket.key,
         ticket=ticket,
         repo_name="product",
-        repo_path=Path("/workspace/product"),
+        repo_path=repo_path,
         worktree_path=worktree_path,
         branch_name=f"feature/{ticket.key}-{summary.lower().replace(' ', '-')}",
         base_ref="origin/main",
@@ -627,6 +818,7 @@ def run_state(
         status=status,
         created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         updated_at=datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC),
+        mr_url=mr_url,
     )
 
 
@@ -661,6 +853,26 @@ def make_finish_worktree(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "Ticket: YT-123\n\nVerification: pytest\n"
     )
     return repo, worktree, origin, base_sha
+
+
+def make_cleanup_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
+    repo = make_git_repo(tmp_path)
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+    worktree = tmp_path / "worktrees" / "feature__YT-123-add-cache"
+    worktree.parent.mkdir()
+    run_git(
+        repo,
+        "worktree",
+        "add",
+        "-b",
+        "feature/YT-123-add-cache",
+        str(worktree),
+        "main",
+    )
+    return repo, worktree, origin
 
 
 def fake_glab(tmp_path: Path, *, list_json: str, create_output: str) -> Path:
