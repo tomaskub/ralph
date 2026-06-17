@@ -235,6 +235,19 @@ def derive_gitlab_project(
     return gitlab_project_from_remote_url(result.stdout.strip())
 
 
+def derive_gitlab_host(
+    repo_path: Path,
+    *,
+    remote: str = DEFAULT_GIT_REMOTE,
+    runner: CommandRunner | None = None,
+) -> str | None:
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "remote", "get-url", remote], cwd=repo_path)
+    if result.returncode != 0:
+        return None
+    return gitlab_host_from_remote_url(result.stdout.strip())
+
+
 def gitlab_project_from_remote_url(remote_url: str) -> str | None:
     if not remote_url:
         return None
@@ -246,6 +259,24 @@ def gitlab_project_from_remote_url(remote_url: str) -> str | None:
     protocol = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]+/(?P<path>.+)$", remote_url)
     if protocol:
         return _clean_git_remote_path(protocol.group("path"))
+
+    return None
+
+
+def gitlab_host_from_remote_url(remote_url: str) -> str | None:
+    if not remote_url:
+        return None
+
+    scp_like = re.match(r"^[^@]+@(?P<host>[^:]+):.+$", remote_url)
+    if scp_like:
+        return scp_like.group("host")
+
+    protocol = re.match(
+        r"^[a-zA-Z][a-zA-Z0-9+.-]*://(?:[^@/]+@)?(?P<host>[^/:]+)(?::\d+)?/.+$",
+        remote_url,
+    )
+    if protocol:
+        return protocol.group("host")
 
     return None
 

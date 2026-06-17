@@ -6,6 +6,7 @@ from ralph.config import (
     build_single_repo_config,
     config_to_toml,
     derive_gitlab_project,
+    gitlab_host_from_remote_url,
     gitlab_project_from_remote_url,
     load_config,
     validate_init_inputs,
@@ -103,6 +104,18 @@ def test_gitlab_project_from_remote_url_supports_common_url_forms() -> None:
         gitlab_project_from_remote_url("https://gitlab.com/group/product.git")
         == "group/product"
     )
+
+
+def test_gitlab_host_from_remote_url_supports_common_url_forms() -> None:
+    assert gitlab_host_from_remote_url("git@gitlab.com:group/product.git") == (
+        "gitlab.com"
+    )
+    assert gitlab_host_from_remote_url(
+        "https://gitlab.example.com/group/product.git"
+    ) == "gitlab.example.com"
+    assert gitlab_host_from_remote_url(
+        "ssh://git@gitlab.internal:2222/group/product.git"
+    ) == "gitlab.internal"
 
 
 def make_git_repo(tmp_path: Path) -> Path:
