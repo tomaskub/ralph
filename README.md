@@ -209,3 +209,40 @@ To run the CLI directly from the checkout:
 ```bash
 uv run ralph --help
 ```
+
+### Pull Request Checks
+
+GitHub Actions runs the repository quality gates on pull requests and pushes to
+`main`:
+
+```bash
+uv run ruff check .
+uv run pytest
+uv build
+```
+
+### Main Branch Protection
+
+Configure branch protection for `main` in GitHub repository settings:
+
+- require a pull request before merging
+- do not require approving reviews
+- require status checks before merging
+- require the `ci` status check to pass before merging
+- require branches to be up to date before merging
+- include administrators so maintainers cannot bypass the required CI check
+- block direct pushes by allowing merges only through pull requests
+
+### Releases
+
+Create a release from an up-to-date, clean checkout:
+
+```bash
+make release
+```
+
+The release command infers the version from `pyproject.toml` and
+`src/ralph/__init__.py`, requires both sources to match, validates that
+`v<version>` does not already exist locally or on `origin`, then runs linting,
+tests, and a package build before creating the tag and GitHub release with
+generated notes.
