@@ -53,7 +53,7 @@ def test_update_installs_latest_github_release_tag(monkeypatch) -> None:
                 "pipx",
                 "install",
                 "--force",
-                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+                "git+https://github.com/tomaskub/ralph.git@0.2.0",
             ),
             returncode=0,
             stdout="installed\n",
@@ -61,7 +61,7 @@ def test_update_installs_latest_github_release_tag(monkeypatch) -> None:
         )
     )
     monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
-    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "v0.2.0")
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "0.2.0")
 
     result = runner.invoke(app, ["update"])
 
@@ -70,15 +70,15 @@ def test_update_installs_latest_github_release_tag(monkeypatch) -> None:
         "pipx",
         "install",
         "--force",
-        "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+        "git+https://github.com/tomaskub/ralph.git@0.2.0",
     )
     assert fake_runner.args_history == [fake_runner.args]
     assert (
         "Updating RALPH with: pipx install --force "
-        "git+https://github.com/tomaskub/ralph.git@v0.2.0"
+        "git+https://github.com/tomaskub/ralph.git@0.2.0"
     ) in result.output
     assert "installed" in result.output
-    assert "RALPH is up to date at v0.2.0." in result.output
+    assert "RALPH is up to date at 0.2.0." in result.output
 
 
 def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
@@ -87,10 +87,11 @@ def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
             args=("git", "ls-remote", "--tags", "https://github.com/tomaskub/ralph.git"),
             returncode=0,
             stdout=(
-                "abc\trefs/tags/v0.1.0\n"
+                "abc\trefs/tags/0.1.0\n"
                 "def\trefs/tags/not-a-release\n"
-                "ghi\trefs/tags/v0.2.0\n"
-                "jkl\trefs/tags/v0.2.0^{}\n"
+                "ghi\trefs/tags/0.2.0\n"
+                "jkl\trefs/tags/0.2.0^{}\n"
+                "mno\trefs/tags/v0.3.0\n"
             ),
             stderr="",
         ),
@@ -99,7 +100,7 @@ def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
                 "pipx",
                 "install",
                 "--force",
-                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+                "git+https://github.com/tomaskub/ralph.git@0.2.0",
             ),
             returncode=0,
             stdout="installed\n",
@@ -118,10 +119,10 @@ def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
             "pipx",
             "install",
             "--force",
-            "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+            "git+https://github.com/tomaskub/ralph.git@0.2.0",
         ),
     ]
-    assert "RALPH is up to date at v0.2.0." in result.output
+    assert "RALPH is up to date at 0.2.0." in result.output
 
 
 def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
@@ -131,7 +132,7 @@ def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
                 "pipx",
                 "install",
                 "--force",
-                "git+https://example.test/ralph.git@v0.1.0",
+                "git+https://example.test/ralph.git@0.1.0",
             ),
             returncode=0,
             stdout="installed\n",
@@ -151,7 +152,7 @@ def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
             "--repo-url",
             "https://example.test/ralph.git",
             "--tag",
-            "v0.1.0",
+            "0.1.0",
         ],
     )
 
@@ -161,7 +162,7 @@ def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
             "pipx",
             "install",
             "--force",
-            "git+https://example.test/ralph.git@v0.1.0",
+            "git+https://example.test/ralph.git@0.1.0",
         )
     ]
 
@@ -193,7 +194,7 @@ def test_update_reports_pipx_install_failure(monkeypatch) -> None:
                 "pipx",
                 "install",
                 "--force",
-                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+                "git+https://github.com/tomaskub/ralph.git@0.2.0",
             ),
             returncode=1,
             stdout="",
@@ -201,7 +202,7 @@ def test_update_reports_pipx_install_failure(monkeypatch) -> None:
         )
     )
     monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
-    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "v0.2.0")
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "0.2.0")
 
     result = runner.invoke(app, ["update"])
 
@@ -210,7 +211,7 @@ def test_update_reports_pipx_install_failure(monkeypatch) -> None:
     assert "pipx failed" in result.output
     assert (
         "Run manually: pipx install --force "
-        "git+https://github.com/tomaskub/ralph.git@v0.2.0"
+        "git+https://github.com/tomaskub/ralph.git@0.2.0"
     ) in result.output
 
 
