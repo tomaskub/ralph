@@ -104,7 +104,7 @@ main() {
 
   local version tag
   version="$(read_version)"
-  tag="v$version"
+  tag="$version"
   require_tag_available "$tag"
 
   run uv run ruff check .

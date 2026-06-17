@@ -75,7 +75,7 @@ DEFAULT_INSTALL_REPO_URL = "https://github.com/tomaskub/ralph.git"
 GITHUB_LATEST_RELEASE_URL = (
     "https://api.github.com/repos/tomaskub/ralph/releases/latest"
 )
-SEMVER_TAG_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+SEMVER_TAG_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
 
 class NotImplementedCommand(RuntimeError):
@@ -132,7 +132,7 @@ def update(
         console.print("[red]RALPH update failed.[/red]")
         console.print(
             "Could not find a stable semver GitHub release or tag, "
-            "for example v0.1.0."
+            "for example 0.1.0."
         )
         console.print(
             f"Install manually once a tag exists: pipx install --force "

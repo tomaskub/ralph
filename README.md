@@ -19,7 +19,7 @@ console command. It requires Python 3.12 or newer.
 Install the published package with `pipx`:
 
 ```bash
-pipx install "git+https://github.com/tomaskub/ralph.git@v0.1.0"
+pipx install "git+https://github.com/tomaskub/ralph.git@0.1.0"
 ```
 
 To install RALPH directly from this repository:
@@ -139,7 +139,7 @@ pipx install --force "git+https://github.com/tomaskub/ralph.git@<latest-tag>"
 To install a specific tag manually:
 
 ```bash
-ralph update --tag v0.1.0
+ralph update --tag 0.1.0
 ```
 
 For development dogfooding against the latest `main`, install that branch
@@ -243,6 +243,6 @@ make release
 
 The release command infers the version from `pyproject.toml` and
 `src/ralph/__init__.py`, requires both sources to match, validates that
-`v<version>` does not already exist locally or on `origin`, then runs linting,
+`<version>` does not already exist locally or on `origin`, then runs linting,
 tests, and a package build before creating the tag and GitHub release with
 generated notes.
