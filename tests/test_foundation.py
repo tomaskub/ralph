@@ -27,6 +27,25 @@ def test_branch_name_uses_branch_kind_ticket_key_and_summary_slug() -> None:
     assert branch_name_for_ticket(ticket, "feature") == "feature/YT-123-add-cache"
 
 
+def test_branch_name_ascii_normalizes_and_limits_full_branch_length() -> None:
+    ticket = normalize_ticket(
+        jira_json(
+            fields={
+                "summary": (
+                    "Résumé cache support with very long title that should be "
+                    "trimmed before it becomes too wide"
+                )
+            }
+        )
+    )
+
+    branch = branch_name_for_ticket(ticket, "feature")
+
+    assert branch.startswith("feature/YT-123-resume-cache-support")
+    assert len(branch) <= 80
+    assert branch[-1] != "-"
+
+
 def test_state_path_uses_repo_and_ticket() -> None:
     assert state_path(Path("/tmp/state"), "yt-smzr", "YT-123") == Path(
         "/tmp/state/yt-smzr/YT-123.json"

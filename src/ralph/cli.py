@@ -20,7 +20,14 @@ from ralph.config import (
     write_config,
 )
 from ralph.doctor import DoctorCheck, run_doctor_checks
-from ralph.git import branch_name_for_ticket, worktree_path_for_branch
+from ralph.git import (
+    GitPlanError,
+    branch_name_for_ticket,
+    local_branch_exists,
+    remote_branch_exists,
+    resolve_ref_sha,
+    worktree_path_for_branch,
+)
 from ralph.jira import (
     JiraFetchError,
     branch_kind_for_ticket,
@@ -28,6 +35,8 @@ from ralph.jira import (
     normalize_ticket,
     validate_ticket,
 )
+from ralph.models import Ticket
+from ralph.templates import render_template
 
 app = typer.Typer(
     help="Local operator CLI for AI-agent ticket work loops.",
@@ -204,14 +213,27 @@ def start(
     worktree_path = worktree_path_for_branch(repo.worktree_root, branch_name)
 
     if dry_run:
-        console.print("[bold]Dry run[/bold]")
-        console.print(f"Ticket: {normalized_ticket.key}")
-        console.print(f"Summary: {normalized_ticket.summary}")
-        console.print("Dependency/status decision: allowed")
-        console.print(f"Planned branch: {branch_name}")
-        console.print(f"Planned worktree path: {worktree_path}")
-        console.print(f"Planned Jira command: {config.jira.issue_json_command}")
-        console.print("[green]No files were written.[/green]")
+        try:
+            base_sha = resolve_ref_sha(repo.repo_path, repo.base_ref)
+            _check_start_availability(
+                repo_path=repo.repo_path,
+                worktree_path=worktree_path,
+                remote=repo.git_remote,
+                branch_name=branch_name,
+            )
+        except GitPlanError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        _render_start_dry_run(
+            ticket=normalized_ticket,
+            branch_name=branch_name,
+            worktree_path=worktree_path,
+            base_ref=repo.base_ref,
+            base_sha=base_sha,
+            jira_command=config.jira.issue_json_command.format(ticket=ticket),
+            agent_command=config.tools.agent,
+        )
         return
 
     fail_unimplemented(f"start {ticket}")
@@ -254,3 +276,77 @@ def _render_doctor_checks(checks: list[DoctorCheck]) -> None:
             check.action or "",
         )
     console.print(table)
+
+
+def _check_start_availability(
+    *,
+    repo_path: Path,
+    worktree_path: Path,
+    remote: str,
+    branch_name: str,
+) -> None:
+    if worktree_path.exists():
+        raise GitPlanError(f"Worktree path already exists: {worktree_path}")
+    if local_branch_exists(repo_path, branch_name):
+        raise GitPlanError(f"Local branch already exists: {branch_name}")
+    if remote_branch_exists(repo_path, remote, branch_name):
+        raise GitPlanError(f"Remote branch already exists: {remote}/{branch_name}")
+
+
+def _render_start_dry_run(
+    *,
+    ticket: Ticket,
+    branch_name: str,
+    worktree_path: Path,
+    base_ref: str,
+    base_sha: str,
+    jira_command: str,
+    agent_command: str,
+) -> None:
+    console.print("[bold]Dry run[/bold]")
+    console.print(f"Ticket: {ticket.key}")
+    console.print(f"Summary: {ticket.summary}")
+    console.print(f"Issue type: {ticket.issue_type}")
+    console.print(f"Status: {ticket.status}")
+    console.print("Dependency/status decision: allowed")
+    console.print(f"Planned branch: {branch_name}")
+    console.print(f"Planned worktree path: {worktree_path}")
+    console.print(f"Resolved base ref: {base_ref}")
+    console.print(f"Resolved base SHA: {base_sha}")
+    console.print("Planned commands:")
+    console.print(f"  {jira_command}")
+    console.print(f"  git worktree add {worktree_path} {branch_name}")
+    console.print(f"  {agent_command}")
+    console.print("Generated file previews:")
+    for path, content in _agent_file_previews(
+        ticket=ticket,
+        branch_name=branch_name,
+    ):
+        console.print(f"[bold]{path}[/bold]")
+        console.print(content.rstrip())
+    console.print(
+        "[green]No branches, worktrees, state files, or .agent/ files were "
+        "written.[/green]"
+    )
+
+
+def _agent_file_previews(
+    *,
+    ticket: Ticket,
+    branch_name: str,
+) -> list[tuple[str, str]]:
+    context = {"ticket": ticket, "branch_name": branch_name}
+    return [
+        (".agent/task.md", render_template("task.md.j2", **context)),
+        (".agent/context.md", render_template("context.md.j2", **context)),
+        (
+            ".agent/bootstrap-prompt.md",
+            render_template("bootstrap-prompt.md.j2", **context),
+        ),
+        (".agent/status.md", render_template("status.md.j2", **context)),
+        (".agent/mr_title.md", render_template("mr_title.md.j2", **context)),
+        (
+            ".agent/mr_description.md",
+            render_template("mr_description.md.j2", **context),
+        ),
+    ]

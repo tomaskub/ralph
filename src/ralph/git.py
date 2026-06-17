@@ -1,9 +1,11 @@
 """Git-related planning and validation helpers."""
 
 import re
+import unicodedata
 from pathlib import Path
 
 from ralph.models import Ticket
+from ralph.runner import CommandRunner
 
 MAX_BRANCH_LENGTH = 80
 
@@ -18,6 +20,67 @@ def branch_name_for_ticket(ticket: Ticket, branch_kind: str) -> str:
     return branch[:MAX_BRANCH_LENGTH].rstrip("-")
 
 
+def resolve_ref_sha(
+    repo_path: Path,
+    ref: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> str:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=repo_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Base ref does not resolve to a commit: {ref}{suffix}")
+    return result.stdout.strip()
+
+
+def local_branch_exists(
+    repo_path: Path,
+    branch_name: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> bool:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        cwd=repo_path,
+    )
+    return result.returncode == 0
+
+
+def remote_branch_exists(
+    repo_path: Path,
+    remote: str,
+    branch_name: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> bool:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "ls-remote", "--exit-code", remote, f"refs/heads/{branch_name}"],
+        cwd=repo_path,
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 2:
+        return False
+    detail = result.stderr.strip()
+    suffix = f": {detail}" if detail else ""
+    raise GitPlanError(
+        f"Could not check remote branch {remote}/{branch_name}{suffix}"
+    )
+
+
+class GitPlanError(RuntimeError):
+    """Raised when read-only Git planning checks fail."""
+
+
 def _slugify(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_value.lower()).strip("-")
     return slug or "ticket"
