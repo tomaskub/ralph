@@ -16,7 +16,12 @@ from ralph.config import (
     write_config,
 )
 from ralph.doctor import DoctorCheck
-from ralph.git import local_branch_exists
+from ralph.git import (
+    branch_name_for_ticket,
+    local_branch_exists,
+    worktree_path_for_branch,
+)
+from ralph.jira import branch_kind_for_ticket, normalize_ticket
 from ralph.models import RunState, Ticket
 from ralph.state import write_run_state
 from tests.test_config import make_git_repo, run_git
@@ -247,6 +252,48 @@ def test_start_dry_run_integration_does_not_mutate_repo_or_files(
     assert not (repo / ".agent").exists()
 
 
+def test_ticket_planning_composes_normalization_branch_and_worktree_path(
+    tmp_path: Path,
+) -> None:
+    config = build_single_repo_config(
+        repo_path=tmp_path / "product",
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    ticket = normalize_ticket(
+        {
+            "key": "YT-987",
+            "fields": {
+                "summary": "Fix café checkout regression with verbose branch text",
+                "description": "Checkout must remain stable.",
+                "issuetype": {"name": "Bug"},
+                "status": {"name": "To Do"},
+                "issuelinks": [],
+            },
+        }
+    )
+
+    branch_kind = branch_kind_for_ticket(ticket, config.branch_kinds)
+    branch = branch_name_for_ticket(ticket, branch_kind)
+    worktree_path = worktree_path_for_branch(
+        config.repos["product"].worktree_root,
+        branch,
+    )
+
+    assert branch_kind == "bugfix"
+    assert branch == (
+        "bugfix/YT-987-fix-cafe-checkout-regression-with-verbose-branch-text"
+    )
+    assert worktree_path == (
+        tmp_path
+        / "worktrees"
+        / "bugfix__YT-987-fix-cafe-checkout-regression-with-verbose-branch-text"
+    )
+
+
 def test_start_creates_worktree_agent_files_state_and_launches_agent(
     tmp_path: Path,
     monkeypatch,
@@ -450,7 +497,11 @@ def test_finish_pushes_branch_creates_draft_mr_and_updates_state(
     repo, worktree, origin, base_sha = make_finish_worktree(tmp_path)
     state_dir = tmp_path / "state" / "ralph"
     config_path = tmp_path / "config.toml"
-    glab = fake_glab(tmp_path, list_json="[]", create_output="https://gitlab.example/mr/1\n")
+    glab = fake_glab(
+        tmp_path,
+        list_json="[]",
+        create_output="https://gitlab.example/mr/1\n",
+    )
     write_config(
         RalphConfig(
             default_repo="product",
@@ -565,6 +616,179 @@ def test_finish_records_existing_mr_and_refuses_duplicate_creation(
     state = json.loads((state_dir / "product" / "YT-123.json").read_text())
     assert state["status"] == "mr-created"
     assert state["mr_url"] == "https://gitlab.example/mr/existing"
+
+
+def test_mvp_lifecycle_transitions_from_start_to_finish_to_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text(".agent/\n")
+    run_git(repo, "add", ".gitignore")
+    run_git(repo, "commit", "-m", "Ignore agent files")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    fixture = tmp_path / "jira-ticket.json"
+    fixture.write_text(json.dumps(jira_ticket_json()))
+    printer = tmp_path / "print_jira.py"
+    printer.write_text(
+        "import pathlib\n"
+        f"print(pathlib.Path({str(fixture)!r}).read_text())\n"
+    )
+    glab = fake_glab(
+        tmp_path,
+        list_json="[]",
+        create_output="https://gitlab.example/mr/1\n",
+    )
+    base_config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=worktree_root,
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=base_config.default_repo,
+            repos=base_config.repos,
+            tools=ToolConfig(
+                agent=f"{sys.executable} -c pass",
+                gitlab=f"{sys.executable} {glab}",
+            ),
+            jira=JiraConfig(
+                issue_json_command=f"{sys.executable} {printer} {{ticket}}"
+            ),
+            branch_kinds=base_config.branch_kinds,
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    started = runner.invoke(app, ["start", "YT-123"])
+
+    branch = "feature/YT-123-add-cache"
+    worktree = worktree_root / "feature__YT-123-add-cache"
+    state_path = state_dir / "product" / "YT-123.json"
+    assert started.exit_code == 0, started.output
+    assert json.loads(state_path.read_text())["status"] == "started"
+
+    (worktree / "code.txt").write_text("implemented\n")
+    run_git(worktree, "add", "code.txt")
+    run_git(worktree, "commit", "-m", "Implement YT-123")
+
+    finished = runner.invoke(app, ["finish", "YT-123"])
+
+    assert finished.exit_code == 0, finished.output
+    assert json.loads(state_path.read_text())["status"] == "mr-created"
+    assert run_git_stdout(origin, "show-ref", "--verify", f"refs/heads/{branch}")
+
+    cleaned = runner.invoke(app, ["cleanup", "YT-123"], input="y\n")
+
+    state = json.loads(state_path.read_text())
+    assert cleaned.exit_code == 0, cleaned.output
+    assert state["status"] == "cleaned-up"
+    assert state["mr_url"] == "https://gitlab.example/mr/1"
+    assert not worktree.exists()
+    assert not local_branch_exists(repo, branch)
+    assert run_git_stdout(origin, "show-ref", "--verify", f"refs/heads/{branch}")
+
+
+def test_finish_refuses_no_commits_dirty_worktree_and_todo_mr_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin, base_sha = make_finish_worktree(tmp_path)
+    run_git(worktree, "reset", "--hard", base_sha)
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    no_commits = runner.invoke(app, ["finish", "YT-123"])
+
+    assert no_commits.exit_code == 1
+    assert "Branch has no commits ahead of recorded base SHA" in no_commits.output
+
+    (worktree / "dirty.txt").write_text("dirty\n")
+    dirty = runner.invoke(app, ["finish", "YT-123"])
+
+    assert dirty.exit_code == 1
+    assert "Worktree must be clean before finish" in dirty.output
+
+    run_git(worktree, "add", "dirty.txt")
+    run_git(worktree, "commit", "-m", "Implement YT-123")
+    (worktree / ".agent" / "mr_description.md").write_text("TODO: fill this in\n")
+    todo = runner.invoke(app, ["finish", "YT-123"])
+
+    assert todo.exit_code == 1
+    assert ".agent/mr_description.md contains TODO text" in todo.output
+
+
+def test_finish_refuses_branch_behind_upstream_before_pushing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, origin, base_sha = make_finish_worktree(tmp_path)
+    branch = "feature/YT-123-add-cache"
+    run_git(worktree, "push", "-u", "origin", branch)
+    remote_clone = tmp_path / "remote-clone"
+    run_git(tmp_path, "clone", str(origin), str(remote_clone))
+    run_git(remote_clone, "switch", branch)
+    run_git(remote_clone, "config", "user.name", "Test User")
+    run_git(remote_clone, "config", "user.email", "test@example.com")
+    (remote_clone / "remote.txt").write_text("remote change\n")
+    run_git(remote_clone, "add", "remote.txt")
+    run_git(remote_clone, "commit", "-m", "Remote change")
+    run_git(remote_clone, "push", "origin", branch)
+    run_git(worktree, "fetch", "origin")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 1
+    assert "Branch is behind or diverged from upstream" in result.output
 
 
 def test_cleanup_requires_mr_unless_forced(
