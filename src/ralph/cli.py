@@ -32,6 +32,7 @@ from ralph.git import (
     remote_branch_exists,
     resolve_ref_sha,
     worktree_path_for_branch,
+    worktree_state,
 )
 from ralph.jira import (
     JiraFetchError,
@@ -42,7 +43,7 @@ from ralph.jira import (
 )
 from ralph.models import RunState, RunStatus, Ticket
 from ralph.runner import CommandResult, CommandRunner
-from ralph.state import write_run_state
+from ralph.state import list_run_states, write_run_state
 from ralph.templates import render_template
 
 app = typer.Typer(
@@ -50,7 +51,7 @@ app = typer.Typer(
     invoke_without_command=True,
     no_args_is_help=True,
 )
-console = Console()
+console = Console(width=160)
 
 
 class NotImplementedCommand(RuntimeError):
@@ -269,9 +270,36 @@ def start(
 
 
 @app.command()
-def status() -> None:
+def status(
+    include_cleaned_up: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Include cleaned-up runs.",
+        ),
+    ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option(
+            "--verbose",
+            "-v",
+            help="Include base SHA and other verbose fields.",
+        ),
+    ] = False,
+) -> None:
     """Show local RALPH runs."""
-    fail_unimplemented("status")
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except ConfigError as exc:
+        console.print(f"[red]Config error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    repo = config.repos[config.default_repo]
+    runs = list_run_states(repo.name, state_dir=DEFAULT_STATE_DIR)
+    if not include_cleaned_up:
+        runs = [run for run in runs if run.status != "cleaned-up"]
+
+    _render_status(runs, verbose=verbose)
 
 
 @app.command()
@@ -305,6 +333,46 @@ def _render_doctor_checks(checks: list[DoctorCheck]) -> None:
             check.action or "",
         )
     console.print(table)
+
+
+def _render_status(runs: list[RunState], *, verbose: bool) -> None:
+    if not runs:
+        console.print("No local RALPH runs found.")
+        return
+
+    table = Table(title="RALPH runs", min_width=140)
+    table.add_column("Ticket", no_wrap=True)
+    table.add_column("Title", max_width=28, overflow="fold")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Branch", max_width=32, overflow="fold")
+    table.add_column("Worktree", max_width=36, overflow="fold")
+    table.add_column("MR", max_width=28, overflow="fold")
+    table.add_column("Worktree state", no_wrap=True)
+    if verbose:
+        table.add_column("Base SHA", no_wrap=True)
+
+    for run in runs:
+        row = [
+            run.ticket_key,
+            run.ticket.summary,
+            run.status,
+            run.branch_name,
+            str(run.worktree_path),
+            run.mr_url or "",
+            _format_worktree_state(worktree_state(run.worktree_path)),
+        ]
+        if verbose:
+            row.append(run.base_sha)
+        table.add_row(*row)
+    console.print(table)
+
+
+def _format_worktree_state(state: str) -> str:
+    if state == "clean":
+        return "[green]clean[/green]"
+    if state == "dirty":
+        return "[yellow]dirty[/yellow]"
+    return "[red]missing[/red]"
 
 
 def _check_start_availability(
