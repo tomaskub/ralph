@@ -13,8 +13,26 @@ def test_doctor_accepts_configured_tools_repo_and_ignore_rule(tmp_path: Path) ->
     runner = FakeRunner(
         {
             ("jira", "me"): CommandResult(("jira", "me"), 0, "you@example.com\n", ""),
-            ("glab", "auth", "status"): CommandResult(
-                ("glab", "auth", "status"),
+            ("git", "remote", "get-url", "origin"): CommandResult(
+                ("git", "remote", "get-url", "origin"),
+                0,
+                "git@gitlab.private.example:group/product.git\n",
+                "",
+            ),
+            (
+                "glab",
+                "auth",
+                "status",
+                "--hostname",
+                "gitlab.private.example",
+            ): CommandResult(
+                (
+                    "glab",
+                    "auth",
+                    "status",
+                    "--hostname",
+                    "gitlab.private.example",
+                ),
                 0,
                 "Logged in\n",
                 "",
@@ -61,6 +79,7 @@ def test_doctor_accepts_configured_tools_repo_and_ignore_rule(tmp_path: Path) ->
         ".agent ignore rule",
     ]
     assert runner.cwd_by_args[("git", "check-ignore", ".agent/test")] == repo
+    assert runner.cwd_by_args[("git", "remote", "get-url", "origin")] == repo
 
 
 def test_doctor_reports_actionable_failures(tmp_path: Path) -> None:
@@ -69,8 +88,26 @@ def test_doctor_reports_actionable_failures(tmp_path: Path) -> None:
     config = config_for(repo, tmp_path / "missing" / "worktrees")
     runner = FakeRunner(
         {
-            ("glab", "auth", "status"): CommandResult(
-                ("glab", "auth", "status"),
+            ("git", "remote", "get-url", "origin"): CommandResult(
+                ("git", "remote", "get-url", "origin"),
+                0,
+                "git@gitlab.private.example:group/product.git\n",
+                "",
+            ),
+            (
+                "glab",
+                "auth",
+                "status",
+                "--hostname",
+                "gitlab.private.example",
+            ): CommandResult(
+                (
+                    "glab",
+                    "auth",
+                    "status",
+                    "--hostname",
+                    "gitlab.private.example",
+                ),
                 1,
                 "",
                 "not logged in\n",
@@ -105,7 +142,9 @@ def test_doctor_reports_actionable_failures(tmp_path: Path) -> None:
     failed = {check.name: check for check in checks if not check.ok}
     assert failed["Jira CLI installed"].action == "Install jira or update config"
     assert failed["agent command installed"].action == "Install claude or update config"
-    assert failed["GitLab authentication"].action == "Run `glab auth login`"
+    assert failed["GitLab authentication"].action == (
+        "Run `glab auth login --hostname gitlab.private.example`"
+    )
     assert failed["base ref"].action == (
         "Fetch or configure a valid base_ref, currently origin/main"
     )

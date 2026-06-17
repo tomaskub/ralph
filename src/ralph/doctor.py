@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ralph.config import RalphConfig, RepoConfig
+from ralph.config import RalphConfig, RepoConfig, derive_gitlab_host
 from ralph.runner import CommandRunner
 
 
@@ -31,7 +31,7 @@ def run_doctor_checks(
 
     checks: list[DoctorCheck] = []
     checks.extend(_tool_checks(config, which=which))
-    checks.extend(_auth_checks(config, runner=runner, which=which))
+    checks.extend(_auth_checks(config, repo=repo, runner=runner, which=which))
     checks.extend(_repo_checks(repo, runner=runner))
     return checks
 
@@ -68,6 +68,7 @@ def _tool_checks(
 
 def _auth_checks(
     config: RalphConfig,
+    repo: RepoConfig,
     *,
     runner: CommandRunner,
     which: Callable[[str], str | None],
@@ -86,15 +87,32 @@ def _auth_checks(
 
     gitlab = _executable_name(config.tools.gitlab)
     if gitlab and which(gitlab):
+        hostname = _configured_gitlab_hostname(repo, runner=runner)
+        args = [gitlab, "auth", "status"]
+        action = f"Run `{gitlab} auth login`"
+        if hostname:
+            args.extend(["--hostname", hostname])
+            action = f"Run `{gitlab} auth login --hostname {hostname}`"
         checks.append(
             _command_check(
                 "GitLab authentication",
-                [gitlab, "auth", "status"],
+                args,
                 runner=runner,
-                action=f"Run `{gitlab} auth login`",
+                action=action,
             )
         )
     return checks
+
+
+def _configured_gitlab_hostname(
+    repo: RepoConfig,
+    *,
+    runner: CommandRunner,
+) -> str | None:
+    repo_path = repo.repo_path.expanduser()
+    if not repo_path.exists() or not repo_path.is_dir():
+        return None
+    return derive_gitlab_host(repo_path, remote=repo.git_remote, runner=runner)
 
 
 def _repo_checks(repo: RepoConfig, *, runner: CommandRunner) -> list[DoctorCheck]:
