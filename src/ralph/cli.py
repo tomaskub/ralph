@@ -32,11 +32,13 @@ from ralph.git import (
     commits_ahead_count,
     committed_paths,
     current_branch,
+    delete_local_branch,
     ensure_agent_dir_ignored,
     fetch_remote,
     local_branch_exists,
     push_branch,
     remote_branch_exists,
+    remove_worktree,
     resolve_ref_sha,
     upstream_divergence,
     upstream_name,
@@ -357,9 +359,76 @@ def finish(ticket: Annotated[str, typer.Argument(help="Jira ticket key.")]) -> N
 
 
 @app.command()
-def cleanup(ticket: Annotated[str, typer.Argument(help="Jira ticket key.")]) -> None:
+def cleanup(
+    ticket: Annotated[str, typer.Argument(help="Jira ticket key.")],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Allow cleanup before an MR URL is recorded.",
+        ),
+    ] = False,
+) -> None:
     """Remove local ticket work after MR creation or explicit force."""
-    fail_unimplemented(f"cleanup {ticket}")
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except ConfigError as exc:
+        console.print(f"[red]Config error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    repo = config.repos[config.default_repo]
+    path = state_path(DEFAULT_STATE_DIR, repo.name, ticket)
+    if not path.exists():
+        console.print(f"[red]No local state exists for {ticket}[/red]")
+        raise typer.Exit(code=1)
+
+    state = read_run_state(path)
+    try:
+        _check_cleanup_eligibility(state, force=force)
+    except GitPlanError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"Worktree: {state.worktree_path}")
+    console.print(f"Local branch: {state.branch_name}")
+    if not typer.confirm("Remove local worktree and delete local branch?"):
+        console.print("[yellow]Cleanup cancelled.[/yellow]")
+        raise typer.Exit(code=1)
+
+    try:
+        _cleanup_run(state)
+    except GitPlanError as exc:
+        updated = replace(
+            state,
+            status="needs-attention",
+            updated_at=_now(),
+            command_log=[
+                *state.command_log,
+                f"git worktree remove {state.worktree_path}",
+                f"git branch -d {state.branch_name}",
+            ],
+            error=str(exc),
+        )
+        state_file = write_run_state(updated, state_dir=DEFAULT_STATE_DIR)
+        console.print("[red]Cleanup needs manual attention.[/red]")
+        console.print(f"[red]{exc}[/red]")
+        console.print(f"State: {state_file}")
+        raise typer.Exit(code=1) from exc
+
+    updated = replace(
+        state,
+        status="cleaned-up",
+        updated_at=_now(),
+        command_log=[
+            *state.command_log,
+            f"git worktree remove {state.worktree_path}",
+            f"git branch -d {state.branch_name}",
+        ],
+        error=None,
+    )
+    state_file = write_run_state(updated, state_dir=DEFAULT_STATE_DIR)
+    console.print("[green]Cleaned up local ticket work.[/green]")
+    console.print(f"State: {state_file}")
 
 
 def main() -> None:
@@ -656,6 +725,30 @@ def _finish_run(*, state: RunState, gitlab_command: str) -> str:
         title=title,
         description=description,
     )
+
+
+def _check_cleanup_eligibility(state: RunState, *, force: bool) -> None:
+    if state.status == "cleaned-up":
+        raise GitPlanError(f"Run is already cleaned up for {state.ticket_key}")
+    if not force and state.status != "mr-created":
+        raise GitPlanError(
+            f"Run must have an MR before cleanup; use --force to override for "
+            f"{state.ticket_key}"
+        )
+    if not force and not state.mr_url:
+        raise GitPlanError(
+            f"Run must have an MR URL before cleanup; use --force to override for "
+            f"{state.ticket_key}"
+        )
+    if not state.worktree_path.exists():
+        raise GitPlanError(f"Worktree does not exist: {state.worktree_path}")
+    if worktree_state(state.worktree_path) != "clean":
+        raise GitPlanError("Worktree must be clean before cleanup")
+
+
+def _cleanup_run(state: RunState) -> None:
+    remove_worktree(state.repo_path, state.worktree_path)
+    delete_local_branch(state.repo_path, state.branch_name)
 
 
 def _read_mr_title(worktree_path: Path) -> str:

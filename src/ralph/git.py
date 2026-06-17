@@ -243,6 +243,37 @@ def push_branch(
         raise GitPlanError(f"Could not push branch {branch_name}{suffix}")
 
 
+def remove_worktree(
+    repo_path: Path,
+    worktree_path: Path,
+    *,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "worktree", "remove", str(worktree_path)],
+        cwd=repo_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not remove worktree {worktree_path}{suffix}")
+
+
+def delete_local_branch(
+    repo_path: Path,
+    branch_name: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "branch", "-d", branch_name], cwd=repo_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not delete local branch {branch_name}{suffix}")
+
+
 class GitPlanError(RuntimeError):
     """Raised when read-only Git planning checks fail."""
 
