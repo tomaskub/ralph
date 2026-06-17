@@ -1,6 +1,9 @@
 """Command-line entry point for RALPH."""
 
+import json
+import re
 import shlex
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -26,11 +29,17 @@ from ralph.git import (
     GitPlanError,
     add_worktree,
     branch_name_for_ticket,
+    commits_ahead_count,
+    committed_paths,
+    current_branch,
     ensure_agent_dir_ignored,
     fetch_remote,
     local_branch_exists,
+    push_branch,
     remote_branch_exists,
     resolve_ref_sha,
+    upstream_divergence,
+    upstream_name,
     worktree_path_for_branch,
     worktree_state,
 )
@@ -43,7 +52,12 @@ from ralph.jira import (
 )
 from ralph.models import RunState, RunStatus, Ticket
 from ralph.runner import CommandResult, CommandRunner
-from ralph.state import list_run_states, write_run_state
+from ralph.state import (
+    list_run_states,
+    read_run_state,
+    state_path,
+    write_run_state,
+)
 from ralph.templates import render_template
 
 app = typer.Typer(
@@ -305,7 +319,41 @@ def status(
 @app.command()
 def finish(ticket: Annotated[str, typer.Argument(help="Jira ticket key.")]) -> None:
     """Publish an already-committed branch as a draft GitLab MR."""
-    fail_unimplemented(f"finish {ticket}")
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except ConfigError as exc:
+        console.print(f"[red]Config error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    repo = config.repos[config.default_repo]
+    path = state_path(DEFAULT_STATE_DIR, repo.name, ticket)
+    if not path.exists():
+        console.print(f"[red]No local state exists for {ticket}[/red]")
+        raise typer.Exit(code=1)
+
+    state = read_run_state(path)
+    try:
+        mr_url = _finish_run(state=state, gitlab_command=config.tools.gitlab)
+    except GitPlanError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    updated = replace(
+        state,
+        status="mr-created",
+        mr_url=mr_url,
+        updated_at=_now(),
+        command_log=[
+            *state.command_log,
+            f"git push {state.branch_name}",
+            f"{config.tools.gitlab} mr create --draft",
+        ],
+        error=None,
+    )
+    state_file = write_run_state(updated, state_dir=DEFAULT_STATE_DIR)
+    console.print("[green]Created draft GitLab MR.[/green]")
+    console.print(f"MR: {mr_url}")
+    console.print(f"State: {state_file}")
 
 
 @app.command()
@@ -539,6 +587,161 @@ def _run_agent_command(command: str, *, cwd: Path) -> CommandResult:
         suffix = f": {detail}" if detail else ""
         raise GitPlanError(f"Agent command failed{suffix}")
     return result
+
+
+def _finish_run(*, state: RunState, gitlab_command: str) -> str:
+    if state.status == "mr-created":
+        if state.mr_url:
+            raise GitPlanError(
+                f"MR already recorded for {state.ticket_key}: {state.mr_url}"
+            )
+        raise GitPlanError(f"MR is already marked created for {state.ticket_key}")
+    if state.status == "cleaned-up":
+        raise GitPlanError(f"Run is already cleaned up for {state.ticket_key}")
+    if not state.worktree_path.exists():
+        raise GitPlanError(f"Worktree does not exist: {state.worktree_path}")
+    if current_branch(state.worktree_path) != state.branch_name:
+        raise GitPlanError(f"Worktree is not on expected branch: {state.branch_name}")
+    if worktree_state(state.worktree_path) != "clean":
+        raise GitPlanError("Worktree must be clean before finish")
+
+    upstream = upstream_name(state.worktree_path)
+    if upstream:
+        behind, _ahead = upstream_divergence(state.worktree_path, upstream)
+        if behind:
+            raise GitPlanError(
+                f"Branch is behind or diverged from upstream {upstream}; "
+                "reconcile manually before finish"
+            )
+
+    if commits_ahead_count(state.worktree_path, state.base_sha) == 0:
+        raise GitPlanError(
+            f"Branch has no commits ahead of recorded base SHA {state.base_sha}"
+        )
+    agent_paths = [
+        path for path in committed_paths(state.worktree_path, state.base_sha)
+        if path == ".agent" or path.startswith(".agent/")
+    ]
+    if agent_paths:
+        raise GitPlanError(
+            "Committed diff includes .agent/ files: " + ", ".join(agent_paths)
+        )
+
+    title = _read_mr_title(state.worktree_path)
+    description = _read_mr_description(state.worktree_path)
+    existing_url = _find_existing_mr(
+        state=state,
+        gitlab_command=gitlab_command,
+    )
+    if existing_url:
+        updated = replace(
+            state,
+            status="mr-created",
+            mr_url=existing_url,
+            updated_at=_now(),
+            error=None,
+        )
+        write_run_state(updated, state_dir=DEFAULT_STATE_DIR)
+        raise GitPlanError(f"MR already exists for {state.branch_name}: {existing_url}")
+
+    push_branch(
+        state.worktree_path,
+        "origin",
+        state.branch_name,
+        has_upstream=upstream is not None,
+    )
+    return _create_draft_mr(
+        state=state,
+        gitlab_command=gitlab_command,
+        title=title,
+        description=description,
+    )
+
+
+def _read_mr_title(worktree_path: Path) -> str:
+    path = worktree_path / ".agent" / "mr_title.md"
+    if not path.exists():
+        raise GitPlanError("Missing .agent/mr_title.md")
+    lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise GitPlanError(".agent/mr_title.md must contain exactly one non-empty line")
+    if _has_todo_marker(lines[0]):
+        raise GitPlanError(".agent/mr_title.md contains TODO text")
+    return lines[0]
+
+
+def _read_mr_description(worktree_path: Path) -> str:
+    path = worktree_path / ".agent" / "mr_description.md"
+    if not path.exists():
+        raise GitPlanError("Missing .agent/mr_description.md")
+    description = path.read_text().strip()
+    if not description:
+        raise GitPlanError(".agent/mr_description.md must not be empty")
+    if _has_todo_marker(description):
+        raise GitPlanError(".agent/mr_description.md contains TODO text")
+    return description
+
+
+def _has_todo_marker(value: str) -> bool:
+    return re.search(r"\b(?:TODO|TBD)\b", value, flags=re.IGNORECASE) is not None
+
+
+def _find_existing_mr(*, state: RunState, gitlab_command: str) -> str | None:
+    args = [
+        *shlex.split(gitlab_command),
+        "mr",
+        "list",
+        "--source-branch",
+        state.branch_name,
+        "--state",
+        "opened",
+        "--output",
+        "json",
+    ]
+    result = CommandRunner().run(args, cwd=state.worktree_path)
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(payload, list) or not payload:
+        return None
+    first = payload[0]
+    if not isinstance(first, dict):
+        return None
+    url = first.get("web_url") or first.get("url")
+    return str(url) if url else None
+
+
+def _create_draft_mr(
+    *,
+    state: RunState,
+    gitlab_command: str,
+    title: str,
+    description: str,
+) -> str:
+    args = [
+        *shlex.split(gitlab_command),
+        "mr",
+        "create",
+        "--draft",
+        "--title",
+        title,
+        "--description",
+        description,
+        "--source-branch",
+        state.branch_name,
+    ]
+    result = CommandRunner().run(args, cwd=state.worktree_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not create draft GitLab MR{suffix}")
+    match = re.search(r"https?://\S+", result.stdout)
+    if not match:
+        raise GitPlanError("GitLab MR was created but no MR URL was reported")
+    return match.group(0).rstrip(")")
 
 
 def _run_state(

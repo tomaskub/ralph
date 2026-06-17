@@ -63,13 +63,6 @@ def test_status_reports_no_local_runs(
     assert "No local RALPH runs found." in result.output
 
 
-def test_unimplemented_commands_fail_clearly() -> None:
-    result = runner.invoke(app, ["finish", "YT-123"])
-
-    assert result.exit_code == 2
-    assert "ralph finish YT-123 is not implemented yet" in result.output
-
-
 def test_doctor_renders_checks(
     tmp_path: Path,
     monkeypatch,
@@ -449,6 +442,130 @@ def test_status_renders_state_and_worktree_states(
     assert "abc123" in verbose.output
 
 
+def test_finish_pushes_branch_creates_draft_mr_and_updates_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, origin, base_sha = make_finish_worktree(tmp_path)
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    glab = fake_glab(tmp_path, list_json="[]", create_output="https://gitlab.example/mr/1\n")
+    write_config(
+        RalphConfig(
+            default_repo="product",
+            repos={
+                "product": build_single_repo_config(
+                    repo_path=repo,
+                    worktree_root=tmp_path / "worktrees",
+                    base_ref="origin/main",
+                    jira_project="YT",
+                    gitlab_project="group/product",
+                    repo_name="product",
+                ).repos["product"]
+            },
+            tools=ToolConfig(gitlab=f"{sys.executable} {glab}"),
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 0
+    assert "Created draft GitLab MR" in result.output
+    assert "https://gitlab.example/mr/1" in result.output
+    assert run_git_stdout(
+        origin, "show-ref", "--verify", "refs/heads/feature/YT-123-add-cache"
+    )
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert state["status"] == "mr-created"
+    assert state["mr_url"] == "https://gitlab.example/mr/1"
+
+
+def test_finish_refuses_committed_agent_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin, base_sha = make_finish_worktree(tmp_path)
+    run_git(worktree, "add", "-f", ".agent/mr_title.md")
+    run_git(worktree, "commit", "-m", "Commit agent file")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 1
+    assert "Committed diff includes .agent/ files" in result.output
+
+
+def test_finish_records_existing_mr_and_refuses_duplicate_creation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin, base_sha = make_finish_worktree(tmp_path)
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    glab = fake_glab(
+        tmp_path,
+        list_json='[{"web_url": "https://gitlab.example/mr/existing"}]',
+        create_output="should-not-create\n",
+    )
+    write_config(
+        RalphConfig(
+            default_repo="product",
+            repos={
+                "product": build_single_repo_config(
+                    repo_path=repo,
+                    worktree_root=tmp_path / "worktrees",
+                    base_ref="origin/main",
+                    jira_project="YT",
+                    gitlab_project="group/product",
+                    repo_name="product",
+                ).repos["product"]
+            },
+            tools=ToolConfig(gitlab=f"{sys.executable} {glab}"),
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 1
+    assert "MR already exists" in result.output
+    assert not (tmp_path / "glab-created").exists()
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert state["status"] == "mr-created"
+    assert state["mr_url"] == "https://gitlab.example/mr/existing"
+
+
 def test_init_writes_config_without_modifying_product_repo(
     tmp_path: Path,
     monkeypatch,
@@ -488,6 +605,8 @@ def run_state(
     summary: str,
     worktree_path: Path,
     status: str,
+    *,
+    base_sha: str = "abc123",
 ) -> RunState:
     ticket = Ticket(
         key=ticket_key,
@@ -504,11 +623,60 @@ def run_state(
         worktree_path=worktree_path,
         branch_name=f"feature/{ticket.key}-{summary.lower().replace(' ', '-')}",
         base_ref="origin/main",
-        base_sha="abc123",
+        base_sha=base_sha,
         status=status,
         created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
         updated_at=datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC),
     )
+
+
+def make_finish_worktree(tmp_path: Path) -> tuple[Path, Path, Path, str]:
+    repo = make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text(".agent/\n")
+    run_git(repo, "add", ".gitignore")
+    run_git(repo, "commit", "-m", "Ignore agent files")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+    base_sha = run_git_stdout(repo, "rev-parse", "HEAD").strip()
+    worktree = tmp_path / "worktrees" / "feature__YT-123-add-cache"
+    worktree.parent.mkdir()
+    run_git(
+        repo,
+        "worktree",
+        "add",
+        "-b",
+        "feature/YT-123-add-cache",
+        str(worktree),
+        "main",
+    )
+    (worktree / "code.txt").write_text("implemented\n")
+    run_git(worktree, "add", "code.txt")
+    run_git(worktree, "commit", "-m", "Implement YT-123")
+    agent_dir = worktree / ".agent"
+    agent_dir.mkdir()
+    (agent_dir / "mr_title.md").write_text("YT-123: Add cache\n")
+    (agent_dir / "mr_description.md").write_text(
+        "Ticket: YT-123\n\nVerification: pytest\n"
+    )
+    return repo, worktree, origin, base_sha
+
+
+def fake_glab(tmp_path: Path, *, list_json: str, create_output: str) -> Path:
+    script = tmp_path / "fake_glab.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['mr', 'list']:\n"
+        f"    print({list_json!r})\n"
+        "elif args[:2] == ['mr', 'create']:\n"
+        f"    pathlib.Path({str(tmp_path / 'glab-created')!r}).write_text('yes')\n"
+        f"    print({create_output!r}, end='')\n"
+        "else:\n"
+        "    raise SystemExit(2)\n"
+    )
+    return script
 
 
 def run_git_stdout(repo: Path, *args: str) -> str:
