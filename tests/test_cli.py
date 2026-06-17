@@ -23,6 +23,7 @@ from ralph.git import (
 )
 from ralph.jira import branch_kind_for_ticket, normalize_ticket
 from ralph.models import RunState, Ticket
+from ralph.runner import CommandResult
 from ralph.state import write_run_state
 from tests.test_config import make_git_repo, run_git
 
@@ -40,8 +41,47 @@ def test_mvp_commands_are_registered() -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    for command in ["init", "doctor", "start", "status", "finish", "cleanup"]:
+    for command in ["init", "doctor", "start", "status", "finish", "cleanup", "update"]:
         assert command in result.output
+
+
+def test_update_runs_pipx_upgrade(monkeypatch) -> None:
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("pipx", "upgrade", "ralph-loop"),
+            returncode=0,
+            stdout="upgraded\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["update"])
+
+    assert result.exit_code == 0
+    assert fake_runner.args == ("pipx", "upgrade", "ralph-loop")
+    assert "Updating RALPH with: pipx upgrade ralph-loop" in result.output
+    assert "upgraded" in result.output
+    assert "RALPH is up to date." in result.output
+
+
+def test_update_reports_pipx_failure(monkeypatch) -> None:
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("pipx", "upgrade", "ralph-loop"),
+            returncode=1,
+            stdout="",
+            stderr="pipx failed\n",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["update"])
+
+    assert result.exit_code == 1
+    assert "RALPH update failed." in result.output
+    assert "pipx failed" in result.output
+    assert "Run manually: pipx upgrade ralph-loop" in result.output
 
 
 def test_status_reports_no_local_runs(
@@ -1113,6 +1153,16 @@ def fake_glab(tmp_path: Path, *, list_json: str, create_output: str) -> Path:
         "    raise SystemExit(2)\n"
     )
     return script
+
+
+class FakeCommandRunner:
+    def __init__(self, result: CommandResult) -> None:
+        self.result = result
+        self.args: tuple[str, ...] | None = None
+
+    def run(self, args, cwd=None) -> CommandResult:
+        self.args = tuple(args)
+        return self.result
 
 
 def run_git_stdout(repo: Path, *args: str) -> str:

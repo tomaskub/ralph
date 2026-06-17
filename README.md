@@ -16,7 +16,14 @@ remote branches.
 RALPH is packaged as the `ralph-loop` Python project and exposes the `ralph`
 console command. It requires Python 3.12 or newer.
 
-To install RALPH for use without cloning this repository:
+Install the published package with `pipx`:
+
+```bash
+pipx install ralph-loop
+ralph --version
+```
+
+To install RALPH directly from this repository:
 
 ```bash
 python -m pip install "ralph-loop @ git+ssh://git@github.com/tomaskub/ralph.git"
@@ -116,6 +123,18 @@ ralph cleanup YT-123
 state record as cleaned up. It does not delete the remote branch. Use
 `--force` only when you intentionally want to clean up before an MR URL is
 recorded.
+
+Update an existing `pipx` installation:
+
+```bash
+ralph update
+```
+
+This runs the equivalent `pipx` upgrade command:
+
+```bash
+pipx upgrade ralph-loop
+```
 
 ### Configuration
 

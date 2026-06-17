@@ -68,6 +68,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console(width=160)
+PACKAGE_NAME = "ralph-loop"
 
 
 class NotImplementedCommand(RuntimeError):
@@ -98,6 +99,34 @@ def callback(
     if version:
         console.print(f"ralph {__version__}")
         raise typer.Exit()
+
+
+@app.command()
+def update(
+    package: Annotated[
+        str,
+        typer.Option(
+            "--package",
+            help="Installed pipx package name to upgrade.",
+        ),
+    ] = PACKAGE_NAME,
+) -> None:
+    """Update the installed RALPH CLI through pipx."""
+    args = ("pipx", "upgrade", package)
+    console.print(f"Updating RALPH with: {shlex.join(args)}")
+    result = CommandRunner().run(args)
+    if result.returncode != 0:
+        console.print("[red]RALPH update failed.[/red]")
+        output = result.stderr.strip() or result.stdout.strip()
+        if output:
+            console.print(output)
+        console.print(f"Run manually: {shlex.join(args)}")
+        raise typer.Exit(code=result.returncode)
+
+    output = result.stdout.strip()
+    if output:
+        console.print(output)
+    console.print("[green]RALPH is up to date.[/green]")
 
 
 @app.command()
