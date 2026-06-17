@@ -3,11 +3,13 @@
 import re
 import unicodedata
 from pathlib import Path
+from typing import Literal
 
 from ralph.models import Ticket
 from ralph.runner import CommandRunner
 
 MAX_BRANCH_LENGTH = 80
+WorktreeState = Literal["missing", "clean", "dirty"]
 
 
 def worktree_path_for_branch(worktree_root: Path, branch_name: str) -> Path:
@@ -82,6 +84,21 @@ def ensure_agent_dir_ignored(
         detail = result.stderr.strip()
         suffix = f": {detail}" if detail else ""
         raise GitPlanError(".agent/ is not ignored by Git" + suffix)
+
+
+def worktree_state(
+    worktree_path: Path,
+    *,
+    runner: CommandRunner | None = None,
+) -> WorktreeState:
+    if not worktree_path.exists():
+        return "missing"
+
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "status", "--porcelain"], cwd=worktree_path)
+    if result.returncode != 0:
+        return "dirty"
+    return "dirty" if result.stdout.strip() else "clean"
 
 
 def local_branch_exists(

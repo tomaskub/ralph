@@ -1,5 +1,6 @@
 import json
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -15,6 +16,8 @@ from ralph.config import (
     write_config,
 )
 from ralph.doctor import DoctorCheck
+from ralph.models import RunState, Ticket
+from ralph.state import write_run_state
 from tests.test_config import make_git_repo, run_git
 
 runner = CliRunner()
@@ -35,11 +38,36 @@ def test_mvp_commands_are_registered() -> None:
         assert command in result.output
 
 
-def test_unimplemented_commands_fail_clearly() -> None:
+def test_status_reports_no_local_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", tmp_path / "state")
+
     result = runner.invoke(app, ["status"])
 
+    assert result.exit_code == 0
+    assert "No local RALPH runs found." in result.output
+
+
+def test_unimplemented_commands_fail_clearly() -> None:
+    result = runner.invoke(app, ["finish", "YT-123"])
+
     assert result.exit_code == 2
-    assert "ralph status is not implemented yet" in result.output
+    assert "ralph finish YT-123 is not implemented yet" in result.output
 
 
 def test_doctor_renders_checks(
@@ -359,6 +387,68 @@ def test_start_persists_needs_attention_after_worktree_creation_failure(
     assert ".agent/ is not ignored by Git" in state["error"]
 
 
+def test_status_renders_state_and_worktree_states(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    clean_repo = make_git_repo(tmp_path)
+    dirty_repo = tmp_path / "dirty"
+    dirty_repo.mkdir()
+    run_git(dirty_repo, "init", "-b", "main")
+    run_git(dirty_repo, "config", "user.name", "Test User")
+    run_git(dirty_repo, "config", "user.email", "test@example.com")
+    (dirty_repo / "README.md").write_text("# Dirty\n")
+    run_git(dirty_repo, "add", "README.md")
+    run_git(dirty_repo, "commit", "-m", "Initial commit")
+    (dirty_repo / "notes.txt").write_text("untracked\n")
+    missing_worktree = tmp_path / "missing"
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    write_config(
+        build_single_repo_config(
+            repo_path=clean_repo,
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+    for state in [
+        run_state("YT-123", "Add cache", clean_repo, "started"),
+        run_state("YT-124", "Fix dirty run", dirty_repo, "needs-attention"),
+        run_state("YT-125", "Recover missing worktree", missing_worktree, "started"),
+        run_state("YT-126", "Already cleaned", tmp_path / "cleaned", "cleaned-up"),
+    ]:
+        write_run_state(state, state_dir=state_dir)
+
+    result = runner.invoke(app, ["status"])
+
+    assert result.exit_code == 0
+    assert "RALPH runs" in result.output
+    assert "YT-123" in result.output
+    assert "Add cache" in result.output
+    assert "started" in result.output
+    assert "clean" in result.output
+    assert "YT-124" in result.output
+    assert "dirty" in result.output
+    assert "YT-125" in result.output
+    assert "missing" in result.output
+    assert "abc123" not in result.output
+    assert "YT-126" not in result.output
+
+    verbose = runner.invoke(app, ["status", "--all", "--verbose"])
+
+    assert verbose.exit_code == 0
+    assert "YT-126" in verbose.output
+    assert "cleaned-up" in verbose.output
+    assert "abc123" in verbose.output
+
+
 def test_init_writes_config_without_modifying_product_repo(
     tmp_path: Path,
     monkeypatch,
@@ -391,6 +481,34 @@ def test_init_writes_config_without_modifying_product_repo(
     assert repo_config.git_remote == "origin"
     assert repo_config.jira_project == "YT"
     assert repo_config.gitlab_project == "group/product"
+
+
+def run_state(
+    ticket_key: str,
+    summary: str,
+    worktree_path: Path,
+    status: str,
+) -> RunState:
+    ticket = Ticket(
+        key=ticket_key,
+        summary=summary,
+        description=f"{summary}.",
+        issue_type="Task",
+        status="To Do",
+    )
+    return RunState(
+        ticket_key=ticket.key,
+        ticket=ticket,
+        repo_name="product",
+        repo_path=Path("/workspace/product"),
+        worktree_path=worktree_path,
+        branch_name=f"feature/{ticket.key}-{summary.lower().replace(' ', '-')}",
+        base_ref="origin/main",
+        base_sha="abc123",
+        status=status,
+        created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC),
+    )
 
 
 def run_git_stdout(repo: Path, *args: str) -> str:
