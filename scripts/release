@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+die() {
+  printf 'release: %s\n' "$*" >&2
+  exit 1
+}
+
+run() {
+  printf '+ %s\n' "$*"
+  "$@"
+}
+
+require_clean_worktree() {
+  git diff --quiet || die "working tree has unstaged changes"
+  git diff --cached --quiet || die "working tree has staged changes"
+  test -z "$(git status --porcelain)" || die "working tree has untracked files"
+}
+
+require_up_to_date_branch() {
+  local upstream
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" ||
+    die "current branch has no upstream; push it or set an upstream before releasing"
+
+  run git fetch origin
+
+  local local_sha remote_sha base_sha
+  local_sha="$(git rev-parse HEAD)"
+  remote_sha="$(git rev-parse "$upstream")"
+  base_sha="$(git merge-base HEAD "$upstream")"
+
+  if [[ "$local_sha" != "$remote_sha" ]]; then
+    if [[ "$local_sha" == "$base_sha" ]]; then
+      die "local branch is behind $upstream"
+    fi
+    if [[ "$remote_sha" == "$base_sha" ]]; then
+      die "local branch is ahead of $upstream; push or release from an up-to-date branch"
+    fi
+    die "local branch has diverged from $upstream"
+  fi
+}
+
+read_version() {
+  python - <<'PY'
+from pathlib import Path
+import ast
+import tomllib
+
+pyproject_version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+
+module = ast.parse(Path("src/ralph/__init__.py").read_text())
+init_version = None
+for node in module.body:
+    if isinstance(node, ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "__version__":
+                init_version = ast.literal_eval(node.value)
+
+if init_version is None:
+    raise SystemExit("src/ralph/__init__.py does not define __version__")
+
+if pyproject_version != init_version:
+    raise SystemExit(
+        "version mismatch: "
+        f"pyproject.toml has {pyproject_version}, "
+        f"src/ralph/__init__.py has {init_version}"
+    )
+
+print(pyproject_version)
+PY
+}
+
+require_tag_available() {
+  local tag="$1"
+
+  if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    die "local tag $tag already exists"
+  fi
+
+  if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+    die "remote tag origin/$tag already exists"
+  fi
+}
+
+main() {
+  require_clean_worktree
+  require_up_to_date_branch
+
+  local version tag build_dir
+  version="$(read_version)"
+  tag="v$version"
+  require_tag_available "$tag"
+
+  run uv run ruff check .
+  run uv run pytest
+
+  build_dir="$(mktemp -d)"
+  trap 'rm -rf "$build_dir"' EXIT
+  run uv build --out-dir "$build_dir"
+
+  run git tag "$tag"
+  run git push origin "$tag"
+  run gh release create "$tag" --generate-notes
+
+  printf 'Created release %s\n' "$tag"
+}
+
+main "$@"
