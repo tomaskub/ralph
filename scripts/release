@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+build_dir=""
+
 die() {
   printf 'release: %s\n' "$*" >&2
   exit 1
@@ -86,6 +88,12 @@ require_tag_available() {
   fi
 }
 
+cleanup() {
+  if [[ -n "$build_dir" ]]; then
+    rm -rf "$build_dir"
+  fi
+}
+
 main() {
   require_command git
   require_command uv
@@ -94,7 +102,7 @@ main() {
   require_clean_worktree
   require_up_to_date_branch
 
-  local version tag build_dir
+  local version tag
   version="$(read_version)"
   tag="v$version"
   require_tag_available "$tag"
@@ -103,7 +111,7 @@ main() {
   run uv run pytest
 
   build_dir="$(mktemp -d)"
-  trap 'rm -rf "$build_dir"' EXIT
+  trap cleanup EXIT
   run uv build --out-dir "$build_dir"
 
   run git tag "$tag"
