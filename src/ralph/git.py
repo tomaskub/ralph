@@ -38,6 +38,52 @@ def resolve_ref_sha(
     return result.stdout.strip()
 
 
+def fetch_remote(
+    repo_path: Path,
+    remote: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "fetch", remote], cwd=repo_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not fetch {remote}{suffix}")
+
+
+def add_worktree(
+    repo_path: Path,
+    worktree_path: Path,
+    branch_name: str,
+    base_ref: str,
+    *,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    result = runner.run(
+        ["git", "worktree", "add", "-b", branch_name, str(worktree_path), base_ref],
+        cwd=repo_path,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Could not create worktree {worktree_path}{suffix}")
+
+
+def ensure_agent_dir_ignored(
+    worktree_path: Path,
+    *,
+    runner: CommandRunner | None = None,
+) -> None:
+    runner = runner or CommandRunner()
+    result = runner.run(["git", "check-ignore", ".agent/test"], cwd=worktree_path)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(".agent/ is not ignored by Git" + suffix)
+
+
 def local_branch_exists(
     repo_path: Path,
     branch_name: str,

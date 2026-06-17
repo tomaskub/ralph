@@ -1,3 +1,5 @@
+import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ralph.config import RepoConfig
@@ -9,8 +11,9 @@ from ralph.jira import (
     normalize_ticket,
     validate_ticket,
 )
-from ralph.runner import CommandResult
-from ralph.state import state_path
+from ralph.models import RunState
+from ralph.runner import CommandResult, CommandRunner
+from ralph.state import state_path, write_run_state
 from ralph.templates import render_template
 
 
@@ -50,6 +53,46 @@ def test_state_path_uses_repo_and_ticket() -> None:
     assert state_path(Path("/tmp/state"), "yt-smzr", "YT-123") == Path(
         "/tmp/state/yt-smzr/YT-123.json"
     )
+
+
+def test_write_run_state_persists_status_and_command_log(tmp_path: Path) -> None:
+    ticket = normalize_ticket(jira_json())
+    state = RunState(
+        ticket_key=ticket.key,
+        ticket=ticket,
+        repo_name="product",
+        repo_path=Path("/workspace/product"),
+        worktree_path=Path("/workspace/worktrees/feature__YT-123-add-cache"),
+        branch_name="feature/YT-123-add-cache",
+        base_ref="origin/main",
+        base_sha="abc123",
+        status="needs-attention",
+        created_at=datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 2, 3, 5, 6, tzinfo=UTC),
+        command_log=["git fetch origin", "git worktree add ..."],
+        error=".agent/ is not ignored by Git",
+    )
+
+    path = write_run_state(state, state_dir=tmp_path)
+
+    assert path == tmp_path / "product" / "YT-123.json"
+    assert '"status": "needs-attention"' in path.read_text()
+    assert '"git fetch origin"' in path.read_text()
+
+
+def test_command_runner_returns_captured_result(tmp_path: Path) -> None:
+    result = CommandRunner().run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('ok'); print('warn', file=sys.stderr)",
+        ],
+        cwd=tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "ok\n"
+    assert result.stderr == "warn\n"
 
 
 def test_normalize_ticket_extracts_core_fields() -> None:

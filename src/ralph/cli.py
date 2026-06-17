@@ -1,5 +1,7 @@
 """Command-line entry point for RALPH."""
 
+import shlex
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -22,7 +24,10 @@ from ralph.config import (
 from ralph.doctor import DoctorCheck, run_doctor_checks
 from ralph.git import (
     GitPlanError,
+    add_worktree,
     branch_name_for_ticket,
+    ensure_agent_dir_ignored,
+    fetch_remote,
     local_branch_exists,
     remote_branch_exists,
     resolve_ref_sha,
@@ -35,7 +40,9 @@ from ralph.jira import (
     normalize_ticket,
     validate_ticket,
 )
-from ralph.models import Ticket
+from ralph.models import RunState, RunStatus, Ticket
+from ralph.runner import CommandResult, CommandRunner
+from ralph.state import write_run_state
 from ralph.templates import render_template
 
 app = typer.Typer(
@@ -236,7 +243,29 @@ def start(
         )
         return
 
-    fail_unimplemented(f"start {ticket}")
+    try:
+        fetch_remote(repo.repo_path, repo.git_remote)
+        base_sha = resolve_ref_sha(repo.repo_path, repo.base_ref)
+        _check_start_availability(
+            repo_path=repo.repo_path,
+            worktree_path=worktree_path,
+            remote=repo.git_remote,
+            branch_name=branch_name,
+        )
+        _start_real_run(
+            ticket=normalized_ticket,
+            repo_name=repo.name,
+            repo_path=repo.repo_path,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            base_ref=repo.base_ref,
+            base_sha=base_sha,
+            git_remote=repo.git_remote,
+            agent_command=config.tools.agent,
+        )
+    except GitPlanError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
@@ -350,3 +379,130 @@ def _agent_file_previews(
             render_template("mr_description.md.j2", **context),
         ),
     ]
+
+
+def _start_real_run(
+    *,
+    ticket: Ticket,
+    repo_name: str,
+    repo_path: Path,
+    worktree_path: Path,
+    branch_name: str,
+    base_ref: str,
+    base_sha: str,
+    git_remote: str,
+    agent_command: str,
+) -> None:
+    command_log = [
+        f"git fetch {git_remote}",
+        f"git worktree add -b {branch_name} {worktree_path} {base_ref}",
+        agent_command,
+    ]
+    started_at = _now()
+    add_worktree(
+        repo_path=repo_path,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
+        base_ref=base_ref,
+    )
+
+    try:
+        ensure_agent_dir_ignored(worktree_path)
+        _write_agent_files(ticket=ticket, branch_name=branch_name, root=worktree_path)
+        state = _run_state(
+            ticket=ticket,
+            repo_name=repo_name,
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            base_ref=base_ref,
+            base_sha=base_sha,
+            status="started",
+            created_at=started_at,
+            command_log=command_log,
+        )
+        state_path = write_run_state(state, state_dir=DEFAULT_STATE_DIR)
+        _run_agent_command(agent_command, cwd=worktree_path)
+    except Exception as exc:
+        state = _run_state(
+            ticket=ticket,
+            repo_name=repo_name,
+            repo_path=repo_path,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            base_ref=base_ref,
+            base_sha=base_sha,
+            status="needs-attention",
+            created_at=started_at,
+            command_log=command_log,
+            error=str(exc),
+        )
+        state_path = write_run_state(state, state_dir=DEFAULT_STATE_DIR)
+        console.print(
+            "[red]Start needs manual attention. Git state was left in place.[/red]"
+        )
+        console.print(f"State: {state_path}")
+        raise typer.Exit(code=1) from exc
+
+    console.print("[green]Started ticket run.[/green]")
+    console.print(f"Worktree: {worktree_path}")
+    console.print(f"Branch: {branch_name}")
+    console.print(f"State: {state_path}")
+
+
+def _write_agent_files(*, ticket: Ticket, branch_name: str, root: Path) -> None:
+    agent_dir = root / ".agent"
+    agent_dir.mkdir(parents=True, exist_ok=False)
+    for relative_path, content in _agent_file_previews(
+        ticket=ticket,
+        branch_name=branch_name,
+    ):
+        (root / relative_path).write_text(content)
+
+
+def _run_agent_command(command: str, *, cwd: Path) -> CommandResult:
+    args = shlex.split(command)
+    if not args:
+        raise GitPlanError("Configured agent command is empty")
+
+    result = CommandRunner().run(args, cwd=cwd)
+    if result.returncode != 0:
+        detail = result.stderr.strip()
+        suffix = f": {detail}" if detail else ""
+        raise GitPlanError(f"Agent command failed{suffix}")
+    return result
+
+
+def _run_state(
+    *,
+    ticket: Ticket,
+    repo_name: str,
+    repo_path: Path,
+    worktree_path: Path,
+    branch_name: str,
+    base_ref: str,
+    base_sha: str,
+    status: RunStatus,
+    created_at: datetime,
+    command_log: list[str],
+    error: str | None = None,
+) -> RunState:
+    return RunState(
+        ticket_key=ticket.key,
+        ticket=ticket,
+        repo_name=repo_name,
+        repo_path=repo_path,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
+        base_ref=base_ref,
+        base_sha=base_sha,
+        status=status,
+        created_at=created_at,
+        updated_at=_now(),
+        command_log=command_log,
+        error=error,
+    )
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
