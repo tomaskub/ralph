@@ -5,18 +5,21 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.table import Table
 
 from ralph import __version__
 from ralph.config import (
     DEFAULT_BASE_REF,
     DEFAULT_CONFIG_PATH,
     DEFAULT_STATE_DIR,
+    ConfigError,
     build_single_repo_config,
     derive_gitlab_project,
     load_config,
     validate_init_inputs,
     write_config,
 )
+from ralph.doctor import DoctorCheck, run_doctor_checks
 from ralph.git import branch_name_for_ticket, worktree_path_for_branch
 from ralph.jira import (
     JiraFetchError,
@@ -109,7 +112,16 @@ def init() -> None:
 @app.command()
 def doctor() -> None:
     """Validate local tools, configuration, and repository setup."""
-    fail_unimplemented("doctor")
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except ConfigError as exc:
+        console.print(f"[red]Config error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    checks = run_doctor_checks(config)
+    _render_doctor_checks(checks)
+    if any(not check.ok for check in checks):
+        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -225,3 +237,20 @@ def cleanup(ticket: Annotated[str, typer.Argument(help="Jira ticket key.")]) -> 
 
 def main() -> None:
     app()
+
+
+def _render_doctor_checks(checks: list[DoctorCheck]) -> None:
+    table = Table(title="RALPH doctor")
+    table.add_column("Check")
+    table.add_column("Result")
+    table.add_column("Detail")
+    table.add_column("Action")
+
+    for check in checks:
+        table.add_row(
+            check.name,
+            "[green]OK[/green]" if check.ok else "[red]FAIL[/red]",
+            check.detail,
+            check.action or "",
+        )
+    console.print(table)
