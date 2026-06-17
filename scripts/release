@@ -11,6 +11,10 @@ run() {
   "$@"
 }
 
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
 require_clean_worktree() {
   git diff --quiet || die "working tree has unstaged changes"
   git diff --cached --quiet || die "working tree has staged changes"
@@ -41,7 +45,7 @@ require_up_to_date_branch() {
 }
 
 read_version() {
-  python - <<'PY'
+  uv run python - <<'PY'
 from pathlib import Path
 import ast
 import tomllib
@@ -83,6 +87,10 @@ require_tag_available() {
 }
 
 main() {
+  require_command git
+  require_command uv
+  require_command gh
+
   require_clean_worktree
   require_up_to_date_branch
 
