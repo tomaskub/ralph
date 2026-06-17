@@ -19,8 +19,7 @@ console command. It requires Python 3.12 or newer.
 Install the published package with `pipx`:
 
 ```bash
-pipx install ralph-loop
-ralph --version
+pipx install "git+https://github.com/tomaskub/ralph.git@v0.1.0"
 ```
 
 To install RALPH directly from this repository:
@@ -130,10 +129,24 @@ Update an existing `pipx` installation:
 ralph update
 ```
 
-This runs the equivalent `pipx` upgrade command:
+This finds the latest stable GitHub release/tag and reinstalls that exact ref
+with pipx, equivalent to:
 
 ```bash
-pipx upgrade ralph-loop
+pipx install --force "git+https://github.com/tomaskub/ralph.git@<latest-tag>"
+```
+
+To install a specific tag manually:
+
+```bash
+ralph update --tag v0.1.0
+```
+
+For development dogfooding against the latest `main`, install that branch
+explicitly:
+
+```bash
+pipx install "git+https://github.com/tomaskub/ralph.git@main"
 ```
 
 ### Configuration

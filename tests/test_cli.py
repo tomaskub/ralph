@@ -3,6 +3,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from ralph import __version__
@@ -45,43 +46,172 @@ def test_mvp_commands_are_registered() -> None:
         assert command in result.output
 
 
-def test_update_runs_pipx_upgrade(monkeypatch) -> None:
+def test_update_installs_latest_github_release_tag(monkeypatch) -> None:
     fake_runner = FakeCommandRunner(
         CommandResult(
-            args=("pipx", "upgrade", "ralph-loop"),
+            args=(
+                "pipx",
+                "install",
+                "--force",
+                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+            ),
             returncode=0,
-            stdout="upgraded\n",
+            stdout="installed\n",
             stderr="",
         )
     )
     monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "v0.2.0")
 
     result = runner.invoke(app, ["update"])
 
     assert result.exit_code == 0
-    assert fake_runner.args == ("pipx", "upgrade", "ralph-loop")
-    assert "Updating RALPH with: pipx upgrade ralph-loop" in result.output
-    assert "upgraded" in result.output
-    assert "RALPH is up to date." in result.output
+    assert fake_runner.args == (
+        "pipx",
+        "install",
+        "--force",
+        "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+    )
+    assert fake_runner.args_history == [fake_runner.args]
+    assert (
+        "Updating RALPH with: pipx install --force "
+        "git+https://github.com/tomaskub/ralph.git@v0.2.0"
+    ) in result.output
+    assert "installed" in result.output
+    assert "RALPH is up to date at v0.2.0." in result.output
 
 
-def test_update_reports_pipx_failure(monkeypatch) -> None:
+def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
     fake_runner = FakeCommandRunner(
         CommandResult(
-            args=("pipx", "upgrade", "ralph-loop"),
+            args=("git", "ls-remote", "--tags", "https://github.com/tomaskub/ralph.git"),
+            returncode=0,
+            stdout=(
+                "abc\trefs/tags/v0.1.0\n"
+                "def\trefs/tags/not-a-release\n"
+                "ghi\trefs/tags/v0.2.0\n"
+                "jkl\trefs/tags/v0.2.0^{}\n"
+            ),
+            stderr="",
+        ),
+        CommandResult(
+            args=(
+                "pipx",
+                "install",
+                "--force",
+                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+            ),
+            returncode=0,
+            stdout="installed\n",
+            stderr="",
+        ),
+    )
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: None)
+
+    result = runner.invoke(app, ["update"])
+
+    assert result.exit_code == 0
+    assert fake_runner.args_history == [
+        ("git", "ls-remote", "--tags", "https://github.com/tomaskub/ralph.git"),
+        (
+            "pipx",
+            "install",
+            "--force",
+            "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+        ),
+    ]
+    assert "RALPH is up to date at v0.2.0." in result.output
+
+
+def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=(
+                "pipx",
+                "install",
+                "--force",
+                "git+https://example.test/ralph.git@v0.1.0",
+            ),
+            returncode=0,
+            stdout="installed\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+    monkeypatch.setattr(
+        "ralph.cli._latest_github_release_tag",
+        lambda: pytest.fail("release discovery should not run"),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "update",
+            "--repo-url",
+            "https://example.test/ralph.git",
+            "--tag",
+            "v0.1.0",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert fake_runner.args_history == [
+        (
+            "pipx",
+            "install",
+            "--force",
+            "git+https://example.test/ralph.git@v0.1.0",
+        )
+    ]
+
+
+def test_update_reports_missing_semver_tag(monkeypatch) -> None:
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "ls-remote", "--tags", "https://github.com/tomaskub/ralph.git"),
+            returncode=0,
+            stdout="abc\trefs/tags/latest\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: None)
+
+    result = runner.invoke(app, ["update"])
+
+    assert result.exit_code == 1
+    assert "Could not find a stable semver GitHub release or tag" in result.output
+    assert "pipx install --force" in result.output
+    assert "git+https://github.com/tomaskub/ralph.git@<tag>" in result.output
+
+
+def test_update_reports_pipx_install_failure(monkeypatch) -> None:
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=(
+                "pipx",
+                "install",
+                "--force",
+                "git+https://github.com/tomaskub/ralph.git@v0.2.0",
+            ),
             returncode=1,
             stdout="",
             stderr="pipx failed\n",
         )
     )
     monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+    monkeypatch.setattr("ralph.cli._latest_github_release_tag", lambda: "v0.2.0")
 
     result = runner.invoke(app, ["update"])
 
     assert result.exit_code == 1
     assert "RALPH update failed." in result.output
     assert "pipx failed" in result.output
-    assert "Run manually: pipx upgrade ralph-loop" in result.output
+    assert (
+        "Run manually: pipx install --force "
+        "git+https://github.com/tomaskub/ralph.git@v0.2.0"
+    ) in result.output
 
 
 def test_status_reports_no_local_runs(
@@ -1156,13 +1286,17 @@ def fake_glab(tmp_path: Path, *, list_json: str, create_output: str) -> Path:
 
 
 class FakeCommandRunner:
-    def __init__(self, result: CommandResult) -> None:
-        self.result = result
+    def __init__(self, *results: CommandResult) -> None:
+        self.results = list(results)
         self.args: tuple[str, ...] | None = None
+        self.args_history: list[tuple[str, ...]] = []
 
     def run(self, args, cwd=None) -> CommandResult:
         self.args = tuple(args)
-        return self.result
+        self.args_history.append(self.args)
+        if not self.results:
+            raise AssertionError(f"Unexpected command: {self.args}")
+        return self.results.pop(0)
 
 
 def run_git_stdout(repo: Path, *args: str) -> str:
