@@ -203,6 +203,8 @@ the tests in `tests/test_cli.py`, with configuration, doctor checks, and
 foundation behavior covered by the rest of the test suite.
 
 The MVP product requirements are documented in `docs/prd.md`.
+The post-MVP direction and planned next stages are documented in
+`docs/roadmap.md`.
 
 To run the CLI directly from the checkout:
 
