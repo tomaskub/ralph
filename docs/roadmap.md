@@ -52,63 +52,15 @@ Ralph should make the local execution loop fast and predictable.
 
 ## Roadmap Themes
 
-### 1. Setup Friction and Global Agent Ignore
+### 1. Setup Friction and Git Global Excludes
 
 Ralph currently requires product repositories to ignore `.agent/`. That makes
 Ralph's local operator context leak into each product repo's setup.
 
-Ralph should support a single global agent file directory setting and a command
-that adds that directory to Git's global excludes file.
-
-Target config:
-
-```toml
-[agent_files]
-directory = ".agent"
-```
-
-Default generated files:
-
-```text
-.agent/task.md
-.agent/context.md
-.agent/bootstrap-prompt.md
-.agent/status.md
-.agent/pr_title.md
-.agent/pr_description.md
-```
-
-If `.agent/` already means something in a product repo, the operator can choose
-one alternate global directory:
-
-```toml
-[agent_files]
-directory = ".ralph-agent"
-```
-
-Candidate command:
-
-```text
-ralph setup-ignore
-```
-
-Behavior:
-
-- Read the configured agent files directory.
-- Resolve Git's global excludes file from `git config --global core.excludesfile`.
-- If unset, use the standard default path `~/.config/git/ignore`.
-- Show the exact path and ignore pattern.
-- Append `<agent-directory>/` only when the pattern is absent.
-- Create the parent directory if needed.
-- Confirm before writing, with `--yes` for non-interactive setup.
-- Never remove or rewrite unrelated ignore entries.
-
-Doctor changes:
-
-- Check that the configured agent files directory is ignored in the product repo.
-- Accept ignore coverage from repo `.gitignore`, global excludes, or any other
-  Git ignore mechanism.
-- If missing, suggest `ralph setup-ignore`.
+Ralph should add an operator-wide `[agent_files]` directory setting and a
+separate `ralph setup-ignore` command that can add that directory to Git global
+excludes. See [Git Global Excludes PRD](prd-git-global-excludes.md) for the
+full 0.4.0 feature spec.
 
 ### 2. Configurable Review Publishing
 
@@ -426,8 +378,6 @@ once Ralph can support both GitLab/Jira and GitHub/Issues projects.
 - Should Ralph rename `.agent/mr_title.md` and `.agent/mr_description.md` to
   `pr_title.md` and `pr_description.md`, or only make the filenames
   configurable?
-- Should `ralph setup-ignore` be part of `ralph init`, or remain a separate
-  explicit command?
 - Should GitHub issue numbers be accepted as `42`, `#42`, or only a configured
   display form?
 - How should branch kinds be derived for GitHub Issues when labels are missing?
