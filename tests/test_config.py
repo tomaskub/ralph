@@ -1,8 +1,13 @@
 import subprocess
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from ralph.config import (
     DEFAULT_BASE_REF,
+    AgentFilesConfig,
+    ConfigError,
     build_single_repo_config,
     config_to_toml,
     derive_gitlab_project,
@@ -36,7 +41,54 @@ def test_load_config_reads_single_default_repo(tmp_path: Path) -> None:
     assert repo.git_remote == "origin"
     assert repo.jira_project == "YT"
     assert repo.gitlab_project == "group/product"
+    assert loaded.agent_files.directory == ".agent"
     assert loaded.jira.issue_json_command == "jira issue view {ticket} --format json"
+
+
+def test_load_config_defaults_agent_files_directory_for_legacy_config(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+default_repo = "product"
+
+[repos.product]
+repo_path = "~/workspace/product"
+worktree_root = "~/workspace/product-worktrees"
+base_ref = "origin/main"
+git_remote = "origin"
+jira_project = "YT"
+gitlab_project = "group/product"
+"""
+    )
+
+    loaded = load_config(config_path)
+
+    assert loaded.agent_files.directory == ".agent"
+
+
+def test_load_config_reads_alternate_agent_files_directory(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config = build_single_repo_config(
+        repo_path=Path("~/workspace/product"),
+        worktree_root=Path("~/workspace/product-worktrees"),
+        base_ref=DEFAULT_BASE_REF,
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        replace(
+            config,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+        ),
+        config_path,
+    )
+
+    loaded = load_config(config_path)
+
+    assert loaded.agent_files.directory == ".ralph-agent"
 
 
 def test_config_to_toml_contains_expected_single_repo_shape() -> None:
@@ -56,10 +108,38 @@ def test_config_to_toml_contains_expected_single_repo_shape() -> None:
     assert 'repo_path = "/workspace/product"' in rendered
     assert 'worktree_root = "/workspace/product-worktrees"' in rendered
     assert 'git_remote = "origin"' in rendered
+    assert "[agent_files]" in rendered
+    assert 'directory = ".agent"' in rendered
     assert "[tools]" in rendered
     assert "[jira]" in rendered
     assert 'issue_json_command = "jira issue view {ticket} --format json"' in rendered
     assert "[branch_kinds]" in rendered
+
+
+def test_config_to_toml_contains_alternate_agent_files_directory() -> None:
+    config = build_single_repo_config(
+        repo_path=Path("/workspace/product"),
+        worktree_root=Path("/workspace/product-worktrees"),
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+
+    rendered = config_to_toml(
+        replace(config, agent_files=AgentFilesConfig(directory=".ralph-agent"))
+    )
+
+    assert "[agent_files]" in rendered
+    assert 'directory = ".ralph-agent"' in rendered
+
+
+@pytest.mark.parametrize(
+    "directory", ["", "/tmp/.agent", "nested/.agent", "nested\\.agent", "../.agent"]
+)
+def test_agent_files_directory_rejects_invalid_values(directory: str) -> None:
+    with pytest.raises(ConfigError, match="agent_files.directory"):
+        AgentFilesConfig(directory=directory)
 
 
 def test_validate_init_inputs_accepts_git_repo_base_ref_and_creatable_worktree(
