@@ -16,6 +16,7 @@ from rich.table import Table
 
 from ralph import __version__
 from ralph.config import (
+    DEFAULT_AGENT_FILES_DIRECTORY,
     DEFAULT_BASE_REF,
     DEFAULT_CONFIG_PATH,
     DEFAULT_STATE_DIR,
@@ -457,7 +458,11 @@ def finish(ticket: Annotated[str, typer.Argument(help="Jira ticket key.")]) -> N
 
     state = read_run_state(path)
     try:
-        mr_url = _finish_run(state=state, gitlab_command=config.tools.gitlab)
+        mr_url = _finish_run(
+            state=state,
+            gitlab_command=config.tools.gitlab,
+            agent_files_directory=config.agent_files.directory,
+        )
     except GitPlanError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -782,7 +787,12 @@ def _run_agent_command(command: str, *, cwd: Path) -> CommandResult:
     return result
 
 
-def _finish_run(*, state: RunState, gitlab_command: str) -> str:
+def _finish_run(
+    *,
+    state: RunState,
+    gitlab_command: str,
+    agent_files_directory: str,
+) -> str:
     if state.status == "mr-created":
         if state.mr_url:
             raise GitPlanError(
@@ -811,17 +821,22 @@ def _finish_run(*, state: RunState, gitlab_command: str) -> str:
         raise GitPlanError(
             f"Branch has no commits ahead of recorded base SHA {state.base_sha}"
         )
+    protected_directories = _finish_protected_agent_directories(agent_files_directory)
     agent_paths = [
         path for path in committed_paths(state.worktree_path, state.base_sha)
-        if path == ".agent" or path.startswith(".agent/")
+        if _is_path_in_directories(path, protected_directories)
     ]
     if agent_paths:
+        directory_list = ", ".join(
+            f"{directory}/" for directory in protected_directories
+        )
         raise GitPlanError(
-            "Committed diff includes .agent/ files: " + ", ".join(agent_paths)
+            f"Committed diff includes agent files under {directory_list}: "
+            + ", ".join(agent_paths)
         )
 
-    title = _read_mr_title(state.worktree_path)
-    description = _read_mr_description(state.worktree_path)
+    title = _read_mr_title(state.worktree_path, agent_files_directory)
+    description = _read_mr_description(state.worktree_path, agent_files_directory)
     existing_url = _find_existing_mr(
         state=state,
         gitlab_command=gitlab_command,
@@ -875,27 +890,43 @@ def _cleanup_run(state: RunState) -> None:
     delete_local_branch(state.repo_path, state.branch_name)
 
 
-def _read_mr_title(worktree_path: Path) -> str:
-    path = worktree_path / ".agent" / "mr_title.md"
+def _finish_protected_agent_directories(agent_files_directory: str) -> list[str]:
+    directories = [agent_files_directory]
+    if agent_files_directory != DEFAULT_AGENT_FILES_DIRECTORY:
+        directories.append(DEFAULT_AGENT_FILES_DIRECTORY)
+    return directories
+
+
+def _is_path_in_directories(path: str, directories: list[str]) -> bool:
+    return any(
+        path == directory or path.startswith(f"{directory}/")
+        for directory in directories
+    )
+
+
+def _read_mr_title(worktree_path: Path, agent_files_directory: str) -> str:
+    relative_path = Path(agent_files_directory) / "mr_title.md"
+    path = worktree_path / relative_path
     if not path.exists():
-        raise GitPlanError("Missing .agent/mr_title.md")
+        raise GitPlanError(f"Missing {relative_path}")
     lines = [line.strip() for line in path.read_text().splitlines() if line.strip()]
     if len(lines) != 1:
-        raise GitPlanError(".agent/mr_title.md must contain exactly one non-empty line")
+        raise GitPlanError(f"{relative_path} must contain exactly one non-empty line")
     if _has_todo_marker(lines[0]):
-        raise GitPlanError(".agent/mr_title.md contains TODO text")
+        raise GitPlanError(f"{relative_path} contains TODO text")
     return lines[0]
 
 
-def _read_mr_description(worktree_path: Path) -> str:
-    path = worktree_path / ".agent" / "mr_description.md"
+def _read_mr_description(worktree_path: Path, agent_files_directory: str) -> str:
+    relative_path = Path(agent_files_directory) / "mr_description.md"
+    path = worktree_path / relative_path
     if not path.exists():
-        raise GitPlanError("Missing .agent/mr_description.md")
+        raise GitPlanError(f"Missing {relative_path}")
     description = path.read_text().strip()
     if not description:
-        raise GitPlanError(".agent/mr_description.md must not be empty")
+        raise GitPlanError(f"{relative_path} must not be empty")
     if _has_todo_marker(description):
-        raise GitPlanError(".agent/mr_description.md contains TODO text")
+        raise GitPlanError(f"{relative_path} contains TODO text")
     return description
 
 
