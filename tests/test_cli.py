@@ -1,5 +1,6 @@
 import json
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from typer.testing import CliRunner
 from ralph import __version__
 from ralph.cli import app
 from ralph.config import (
+    AgentFilesConfig,
     JiraConfig,
     RalphConfig,
     ToolConfig,
@@ -423,6 +425,54 @@ def test_start_dry_run_integration_does_not_mutate_repo_or_files(
     assert not (repo / ".agent").exists()
 
 
+def test_start_dry_run_uses_configured_agent_files_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config = build_single_repo_config(
+        repo_path=tmp_path / "product",
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        replace(config, agent_files=AgentFilesConfig(directory=".ralph-agent")),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.resolve_ref_sha", lambda repo_path, ref: "abc123")
+    monkeypatch.setattr("ralph.cli._check_start_availability", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "ralph.cli.fetch_ticket_json",
+        lambda ticket, *, issue_json_command: {
+            "key": ticket,
+            "fields": {
+                "summary": "Add cache",
+                "description": "Cache the summary.",
+                "issuetype": {"name": "Task"},
+                "status": {"name": "To Do"},
+                "issuelinks": [],
+            },
+        },
+    )
+
+    result = runner.invoke(app, ["start", "YT-123", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert ".ralph-agent/task.md" in result.output
+    assert ".ralph-agent/mr_description.md" in result.output
+    assert "Read `.ralph-agent/task.md` and `.ralph-agent/context.md`" in (
+        result.output
+    )
+    assert (
+        "No branches, worktrees, state files, or .ralph-agent/ files were written."
+    ) in result.output
+    assert ".agent/task.md" not in result.output
+
+
 def test_ticket_planning_composes_normalization_branch_and_worktree_path(
     tmp_path: Path,
 ) -> None:
@@ -542,6 +592,73 @@ def test_start_creates_worktree_agent_files_state_and_launches_agent(
     assert "raw" in state["ticket"]
 
 
+def test_start_writes_configured_agent_files_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text(".ralph-agent/\n")
+    run_git(repo, "add", ".gitignore")
+    run_git(repo, "commit", "-m", "Ignore configured agent files")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    fixture = tmp_path / "jira-ticket.json"
+    fixture.write_text(json.dumps(jira_ticket_json()))
+    printer = tmp_path / "print_jira.py"
+    printer.write_text(
+        "import pathlib\n"
+        f"print(pathlib.Path({str(fixture)!r}).read_text())\n"
+    )
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import pathlib\n"
+        "pathlib.Path('agent-ran.txt').write_text('yes')\n"
+    )
+    config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=worktree_root,
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=config.default_repo,
+            repos=config.repos,
+            tools=ToolConfig(agent=f"{sys.executable} {agent}"),
+            jira=JiraConfig(
+                issue_json_command=f"{sys.executable} {printer} {{ticket}}"
+            ),
+            branch_kinds=config.branch_kinds,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["start", "YT-123"])
+
+    assert result.exit_code == 0
+    worktree = worktree_root / "feature__YT-123-add-cache"
+    agent_dir = worktree / ".ralph-agent"
+    assert agent_dir.exists()
+    assert not (worktree / ".agent").exists()
+    assert (agent_dir / "task.md").read_text() == "# YT-123\n\nAdd cache\n\n"
+    assert "Read `.ralph-agent/task.md` and `.ralph-agent/context.md`" in (
+        agent_dir / "bootstrap-prompt.md"
+    ).read_text()
+    assert (worktree / "agent-ran.txt").read_text() == "yes"
+
+
 def test_start_persists_needs_attention_after_worktree_creation_failure(
     tmp_path: Path,
     monkeypatch,
@@ -597,6 +714,63 @@ def test_start_persists_needs_attention_after_worktree_creation_failure(
     assert worktree.exists()
     assert state["status"] == "needs-attention"
     assert ".agent/ is not ignored by Git" in state["error"]
+
+
+def test_start_persists_needs_attention_when_configured_agent_directory_is_not_ignored(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = make_git_repo(tmp_path)
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    fixture = tmp_path / "jira-ticket.json"
+    fixture.write_text(json.dumps(jira_ticket_json()))
+    printer = tmp_path / "print_jira.py"
+    printer.write_text(
+        "import pathlib\n"
+        f"print(pathlib.Path({str(fixture)!r}).read_text())\n"
+    )
+    config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=worktree_root,
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=config.default_repo,
+            repos=config.repos,
+            tools=ToolConfig(agent=f"{sys.executable} -c pass"),
+            jira=JiraConfig(
+                issue_json_command=f"{sys.executable} {printer} {{ticket}}"
+            ),
+            branch_kinds=config.branch_kinds,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["start", "YT-123"])
+
+    worktree = worktree_root / "feature__YT-123-add-cache"
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert result.exit_code == 1
+    assert "Start needs manual attention" in result.output
+    assert worktree.exists()
+    assert not (worktree / ".ralph-agent").exists()
+    assert state["status"] == "needs-attention"
+    assert ".ralph-agent/ is not ignored by Git" in state["error"]
 
 
 def test_status_renders_state_and_worktree_states(
