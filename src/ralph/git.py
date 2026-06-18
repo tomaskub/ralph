@@ -90,7 +90,7 @@ def ensure_agent_dir_ignored(
 ) -> None:
     runner = runner or CommandRunner()
     ignored_path = f"{agent_files_directory}/test"
-    result = runner.run(["git", "check-ignore", ignored_path], cwd=worktree_path)
+    result = runner.run(["git", "check-ignore", "--", ignored_path], cwd=worktree_path)
     if result.returncode != 0:
         detail = result.stderr.strip()
         suffix = f": {detail}" if detail else ""
