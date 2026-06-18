@@ -11,6 +11,7 @@ DEFAULT_CONFIG_PATH = Path("~/.config/ralph/config.toml").expanduser()
 DEFAULT_STATE_DIR = Path("~/.local/state/ralph").expanduser()
 DEFAULT_BASE_REF = "origin/main"
 DEFAULT_GIT_REMOTE = "origin"
+DEFAULT_AGENT_FILES_DIRECTORY = ".agent"
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,14 @@ class ToolConfig:
 @dataclass(frozen=True)
 class JiraConfig:
     issue_json_command: str = "jira issue view {ticket} --format json"
+
+
+@dataclass(frozen=True)
+class AgentFilesConfig:
+    directory: str = DEFAULT_AGENT_FILES_DIRECTORY
+
+    def __post_init__(self) -> None:
+        validate_agent_files_directory(self.directory)
 
 
 @dataclass(frozen=True)
@@ -40,6 +49,7 @@ class RepoConfig:
 class RalphConfig:
     default_repo: str
     repos: dict[str, RepoConfig]
+    agent_files: AgentFilesConfig = field(default_factory=AgentFilesConfig)
     tools: ToolConfig = field(default_factory=ToolConfig)
     jira: JiraConfig = field(default_factory=JiraConfig)
     branch_kinds: dict[str, str] = field(
@@ -85,10 +95,17 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> RalphConfig:
             jira_data.get("issue_json_command", JiraConfig.issue_json_command)
         )
     )
+    agent_files_data = data.get("agent_files", {})
+    agent_files = AgentFilesConfig(
+        directory=str(
+            agent_files_data.get("directory", DEFAULT_AGENT_FILES_DIRECTORY)
+        )
+    )
 
     return RalphConfig(
         default_repo=default_repo,
         repos=repos,
+        agent_files=agent_files,
         tools=tools,
         jira=jira,
         branch_kinds=data.get(
@@ -131,6 +148,9 @@ def config_to_toml(config: RalphConfig) -> str:
 
     lines.extend(
         [
+            "[agent_files]",
+            f'directory = "{_toml_escape(config.agent_files.directory)}"',
+            "",
             "[tools]",
             f'jira = "{_toml_escape(config.tools.jira)}"',
             f'gitlab = "{_toml_escape(config.tools.gitlab)}"',
@@ -171,6 +191,23 @@ def build_single_repo_config(
         gitlab_project=gitlab_project,
     )
     return RalphConfig(default_repo=name, repos={name: repo})
+
+
+def validate_agent_files_directory(directory: str) -> None:
+    if directory == "":
+        raise ConfigError("agent_files.directory must not be empty")
+    path = Path(directory)
+    if path.is_absolute():
+        raise ConfigError("agent_files.directory must be a relative directory name")
+    if (
+        path.name != directory
+        or "\\" in directory
+        or any(part == ".." for part in path.parts)
+    ):
+        raise ConfigError(
+            "agent_files.directory must be one relative directory name without "
+            "path separators or parent-directory traversal"
+        )
 
 
 def validate_init_inputs(
