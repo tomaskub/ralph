@@ -1,6 +1,12 @@
+from dataclasses import replace
 from pathlib import Path
 
-from ralph.config import RalphConfig, ToolConfig, build_single_repo_config
+from ralph.config import (
+    AgentFilesConfig,
+    RalphConfig,
+    ToolConfig,
+    build_single_repo_config,
+)
 from ralph.doctor import run_doctor_checks
 from ralph.runner import CommandResult
 
@@ -82,6 +88,48 @@ def test_doctor_accepts_configured_tools_repo_and_ignore_rule(tmp_path: Path) ->
     assert runner.cwd_by_args[("git", "remote", "get-url", "origin")] == repo
 
 
+def test_doctor_checks_alternate_agent_files_directory(tmp_path: Path) -> None:
+    repo = tmp_path / "product"
+    repo.mkdir()
+    config = replace(
+        config_for(repo, tmp_path / "worktrees"),
+        agent_files=AgentFilesConfig(directory=".ralph-agent"),
+    )
+    runner = FakeRunner(
+        {
+            ("git", "rev-parse", "--git-dir"): CommandResult(
+                ("git", "rev-parse", "--git-dir"),
+                0,
+                ".git\n",
+                "",
+            ),
+            ("git", "rev-parse", "--verify", "origin/main^{commit}"): CommandResult(
+                ("git", "rev-parse", "--verify", "origin/main^{commit}"),
+                0,
+                "abc123\n",
+                "",
+            ),
+            ("git", "check-ignore", ".ralph-agent/test"): CommandResult(
+                ("git", "check-ignore", ".ralph-agent/test"),
+                0,
+                ".ralph-agent/test\n",
+                "",
+            ),
+        }
+    )
+
+    checks = run_doctor_checks(
+        config,
+        runner=runner,
+        which=lambda command: None if command in {"jira", "glab"} else command,
+    )
+
+    assert {check.name for check in checks if check.ok} >= {
+        ".ralph-agent ignore rule"
+    }
+    assert runner.cwd_by_args[("git", "check-ignore", ".ralph-agent/test")] == repo
+
+
 def test_doctor_reports_actionable_failures(tmp_path: Path) -> None:
     repo = tmp_path / "product"
     repo.mkdir()
@@ -152,7 +200,8 @@ def test_doctor_reports_actionable_failures(tmp_path: Path) -> None:
         f"Create {tmp_path / 'missing'} or update worktree_root in config"
     )
     assert failed[".agent ignore rule"].action == (
-        "Add `.agent/` to the product repo ignore rules"
+        "Run `ralph setup-ignore` to add the agent files directory "
+        "to Git global excludes"
     )
 
 

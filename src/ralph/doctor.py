@@ -32,7 +32,13 @@ def run_doctor_checks(
     checks: list[DoctorCheck] = []
     checks.extend(_tool_checks(config, which=which))
     checks.extend(_auth_checks(config, repo=repo, runner=runner, which=which))
-    checks.extend(_repo_checks(repo, runner=runner))
+    checks.extend(
+        _repo_checks(
+            repo,
+            agent_files_directory=config.agent_files.directory,
+            runner=runner,
+        )
+    )
     return checks
 
 
@@ -115,7 +121,12 @@ def _configured_gitlab_hostname(
     return derive_gitlab_host(repo_path, remote=repo.git_remote, runner=runner)
 
 
-def _repo_checks(repo: RepoConfig, *, runner: CommandRunner) -> list[DoctorCheck]:
+def _repo_checks(
+    repo: RepoConfig,
+    *,
+    agent_files_directory: str,
+    runner: CommandRunner,
+) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     repo_path = repo.repo_path.expanduser()
     worktree_root = repo.worktree_root.expanduser()
@@ -161,13 +172,17 @@ def _repo_checks(repo: RepoConfig, *, runner: CommandRunner) -> list[DoctorCheck
         )
     )
     checks.append(_worktree_root_check(worktree_root))
+    agent_files_probe = f"{agent_files_directory}/test"
     checks.append(
         _command_check(
-            ".agent ignore rule",
-            ["git", "check-ignore", ".agent/test"],
+            f"{agent_files_directory} ignore rule",
+            ["git", "check-ignore", agent_files_probe],
             runner=runner,
             cwd=repo_path,
-            action="Add `.agent/` to the product repo ignore rules",
+            action=(
+                "Run `ralph setup-ignore` to add the agent files directory "
+                "to Git global excludes"
+            ),
         )
     )
     return checks
