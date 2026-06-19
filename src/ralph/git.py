@@ -84,15 +84,17 @@ def add_worktree(
 
 def ensure_agent_dir_ignored(
     worktree_path: Path,
+    agent_files_directory: str = ".agent",
     *,
     runner: CommandRunner | None = None,
 ) -> None:
     runner = runner or CommandRunner()
-    result = runner.run(["git", "check-ignore", ".agent/test"], cwd=worktree_path)
+    ignored_path = f"{agent_files_directory}/test"
+    result = runner.run(["git", "check-ignore", "--", ignored_path], cwd=worktree_path)
     if result.returncode != 0:
         detail = result.stderr.strip()
         suffix = f": {detail}" if detail else ""
-        raise GitPlanError(".agent/ is not ignored by Git" + suffix)
+        raise GitPlanError(f"{agent_files_directory}/ is not ignored by Git" + suffix)
 
 
 def worktree_state(

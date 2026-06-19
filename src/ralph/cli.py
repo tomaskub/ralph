@@ -379,6 +379,7 @@ def start(
             base_sha=base_sha,
             jira_command=config.jira.issue_json_command.format(ticket=ticket),
             agent_command=config.tools.agent,
+            agent_files_directory=config.agent_files.directory,
         )
         return
 
@@ -401,6 +402,7 @@ def start(
             base_sha=base_sha,
             git_remote=repo.git_remote,
             agent_command=config.tools.agent,
+            agent_files_directory=config.agent_files.directory,
         )
     except GitPlanError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -638,6 +640,7 @@ def _render_start_dry_run(
     base_sha: str,
     jira_command: str,
     agent_command: str,
+    agent_files_directory: str,
 ) -> None:
     console.print("[bold]Dry run[/bold]")
     console.print(f"Ticket: {ticket.key}")
@@ -659,12 +662,13 @@ def _render_start_dry_run(
     for path, content in _agent_file_previews(
         ticket=ticket,
         branch_name=branch_name,
+        agent_files_directory=agent_files_directory,
     ):
         console.print(f"[bold]{path}[/bold]")
         console.print(content.rstrip())
     console.print(
-        "[green]No branches, worktrees, state files, or .agent/ files were "
-        "written.[/green]"
+        "[green]No branches, worktrees, state files, or "
+        f"{agent_files_directory}/ files were written.[/green]"
     )
 
 
@@ -672,19 +676,33 @@ def _agent_file_previews(
     *,
     ticket: Ticket,
     branch_name: str,
+    agent_files_directory: str,
 ) -> list[tuple[str, str]]:
-    context = {"ticket": ticket, "branch_name": branch_name}
+    context = {
+        "ticket": ticket,
+        "branch_name": branch_name,
+        "agent_files_directory": agent_files_directory,
+    }
     return [
-        (".agent/task.md", render_template("task.md.j2", **context)),
-        (".agent/context.md", render_template("context.md.j2", **context)),
+        (f"{agent_files_directory}/task.md", render_template("task.md.j2", **context)),
         (
-            ".agent/bootstrap-prompt.md",
+            f"{agent_files_directory}/context.md",
+            render_template("context.md.j2", **context),
+        ),
+        (
+            f"{agent_files_directory}/bootstrap-prompt.md",
             render_template("bootstrap-prompt.md.j2", **context),
         ),
-        (".agent/status.md", render_template("status.md.j2", **context)),
-        (".agent/mr_title.md", render_template("mr_title.md.j2", **context)),
         (
-            ".agent/mr_description.md",
+            f"{agent_files_directory}/status.md",
+            render_template("status.md.j2", **context),
+        ),
+        (
+            f"{agent_files_directory}/mr_title.md",
+            render_template("mr_title.md.j2", **context),
+        ),
+        (
+            f"{agent_files_directory}/mr_description.md",
             render_template("mr_description.md.j2", **context),
         ),
     ]
@@ -701,6 +719,7 @@ def _start_real_run(
     base_sha: str,
     git_remote: str,
     agent_command: str,
+    agent_files_directory: str,
 ) -> None:
     command_log = [
         f"git fetch {git_remote}",
@@ -716,8 +735,13 @@ def _start_real_run(
     )
 
     try:
-        ensure_agent_dir_ignored(worktree_path)
-        _write_agent_files(ticket=ticket, branch_name=branch_name, root=worktree_path)
+        ensure_agent_dir_ignored(worktree_path, agent_files_directory)
+        _write_agent_files(
+            ticket=ticket,
+            branch_name=branch_name,
+            root=worktree_path,
+            agent_files_directory=agent_files_directory,
+        )
         state = _run_state(
             ticket=ticket,
             repo_name=repo_name,
@@ -759,12 +783,19 @@ def _start_real_run(
     console.print(f"State: {state_path}")
 
 
-def _write_agent_files(*, ticket: Ticket, branch_name: str, root: Path) -> None:
-    agent_dir = root / ".agent"
+def _write_agent_files(
+    *,
+    ticket: Ticket,
+    branch_name: str,
+    root: Path,
+    agent_files_directory: str,
+) -> None:
+    agent_dir = root / agent_files_directory
     agent_dir.mkdir(parents=True, exist_ok=False)
     for relative_path, content in _agent_file_previews(
         ticket=ticket,
         branch_name=branch_name,
+        agent_files_directory=agent_files_directory,
     ):
         (root / relative_path).write_text(content)
 
