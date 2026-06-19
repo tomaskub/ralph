@@ -3,9 +3,9 @@
 RALPH is a local operator CLI for repeatable AI-agent ticket work loops.
 
 It automates the local mechanics around one Jira ticket at a time: read ticket
-context, create an isolated Git worktree and branch, write focused `.agent/`
-files for an AI agent, track local run state, and publish an already-committed
-branch as a draft GitLab merge request.
+context, create an isolated Git worktree and branch, write focused files in the
+configured agent files directory for an AI agent, track local run state, and
+publish an already-committed branch as a draft GitLab merge request.
 
 RALPH keeps judgment-heavy operations under human control. It does not commit
 changes, rebase, resolve conflicts, merge MRs, transition Jira tickets, or delete
@@ -63,8 +63,27 @@ ralph init
 
 `init` writes `~/.config/ralph/config.toml` and creates local state under
 `~/.local/state/ralph`. It prompts for the product repo path, worktree root,
-base ref, and Jira project key. RALPH uses `origin/main` as the default base ref
-and `origin` as the default Git remote.
+base ref, and Jira project key. RALPH uses `origin/main` as the default base ref,
+`origin` as the default Git remote, and `.agent` as the default agent files
+directory.
+
+`init` does not modify Git global excludes automatically. Set that up
+explicitly when you want product repositories to avoid Ralph-specific
+`.gitignore` entries:
+
+```bash
+ralph setup-ignore
+```
+
+`setup-ignore` appends the configured agent files directory pattern to Git
+global excludes after confirmation. Use `--dry-run` to preview the resolved Git
+global excludes path, comment, and pattern without writing. Use `--yes` to apply
+the same update without prompting.
+
+When Git global excludes covers the agent files directory, product repositories
+do not need Ralph-specific `.gitignore` entries. The default pattern is
+`.agent/`; alternate directories use the configured `<agent-directory>/`
+pattern.
 
 Before starting work, verify the local setup:
 
@@ -73,11 +92,11 @@ ralph doctor
 ```
 
 `doctor` checks tool availability, Jira and GitLab authentication, the configured
-Git repo, base ref, worktree root, and whether `.agent/` is ignored by the
-product repo.
+Git repo, base ref, worktree root, and whether the configured agent files
+directory is ignored by Git. If the ignore check fails, run
+`ralph setup-ignore`.
 
-Preview a ticket run without writing branches, worktrees, state, or `.agent/`
-files:
+Preview a ticket run without writing branches, worktrees, state, or agent files:
 
 ```bash
 ralph start YT-123 --dry-run
@@ -91,7 +110,8 @@ ralph start YT-123
 
 This command fetches the configured remote, validates the Jira ticket, creates a
 ticket branch from the configured base ref, creates a dedicated worktree, writes
-the `.agent/` files, records local run state, and launches the configured agent.
+files under the configured agent files directory, records local run state, and
+launches the configured agent.
 
 Inspect local runs:
 
@@ -108,8 +128,10 @@ ralph finish YT-123
 ```
 
 `finish` requires a clean worktree, at least one commit ahead of the recorded
-base SHA, valid `.agent/mr_title.md` and `.agent/mr_description.md` files, and no
-committed `.agent/` files. It pushes the branch and creates a draft MR with
+base SHA, valid `mr_title.md` and `mr_description.md` files in the configured
+agent files directory, and no committed agent files. With the default
+configuration, those files are `.agent/mr_title.md` and
+`.agent/mr_description.md`. It pushes the branch and creates a draft MR with
 `glab`.
 
 After the MR exists, remove local ticket work:
@@ -164,6 +186,9 @@ git_remote = "origin"
 jira_project = "YT"
 gitlab_project = "group/product"
 
+[agent_files]
+directory = ".agent"
+
 [tools]
 jira = "jira"
 gitlab = "glab"
@@ -177,6 +202,11 @@ Task = "feature"
 Story = "feature"
 Bug = "bugfix"
 ```
+
+The `[agent_files]` section controls where Ralph writes local agent context and
+review request files inside each ticket worktree. The value must be one relative
+directory name. Existing configs that omit `[agent_files]` behave as if
+`directory = ".agent"` were configured.
 
 ## Development
 
