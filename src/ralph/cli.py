@@ -684,8 +684,7 @@ def _global_excludes_has_pattern(path: Path, pattern: str) -> bool:
     if not path.exists():
         return False
     for line in path.read_text().splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and stripped == pattern:
+        if line and not line.lstrip().startswith("#") and line == pattern:
             return True
     return False
 

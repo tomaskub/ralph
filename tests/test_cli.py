@@ -405,7 +405,7 @@ def test_setup_ignore_is_idempotent_and_does_not_backfill_comment(
     config_path = tmp_path / "config.toml"
     excludes_path = tmp_path / "git" / "ignore"
     excludes_path.parent.mkdir()
-    excludes_path.write_text("  .agent/  \n")
+    excludes_path.write_text(".agent/\n")
     write_config(
         build_single_repo_config(
             repo_path=tmp_path / "missing-product",
@@ -432,7 +432,46 @@ def test_setup_ignore_is_idempotent_and_does_not_backfill_comment(
 
     assert result.exit_code == 0
     assert "already contains this pattern" in result.output
-    assert excludes_path.read_text() == "  .agent/  \n"
+    assert excludes_path.read_text() == ".agent/\n"
+
+
+def test_setup_ignore_appends_when_only_whitespace_padded_pattern_exists(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    excludes_path.parent.mkdir()
+    excludes_path.write_text("  .agent/  \n")
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Updated Git global excludes" in result.output
+    assert excludes_path.read_text() == (
+        "  .agent/  \n# Ralph agent files\n.agent/\n"
+    )
 
 
 def test_setup_ignore_uses_configured_agent_files_directory(
