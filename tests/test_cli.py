@@ -278,6 +278,276 @@ def test_doctor_renders_checks(
     assert "git installed" in result.output
 
 
+def test_setup_ignore_dry_run_reports_plan_without_writing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert f"Git global excludes path: {excludes_path}" in result.output
+    assert "Ralph comment: # Ralph agent files" in result.output
+    assert "Ignore pattern: .agent/" in result.output
+    assert "File exists: no" in result.output
+    assert "Parent directories would be created: yes" in result.output
+    assert "Dry run only" in result.output
+    assert not excludes_path.exists()
+
+
+def test_setup_ignore_yes_appends_pattern_and_preserves_existing_content(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    excludes_path.parent.mkdir()
+    excludes_path.write_text("build")
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Updated Git global excludes" in result.output
+    assert excludes_path.read_text() == "build\n# Ralph agent files\n.agent/\n"
+
+
+def test_setup_ignore_prompts_before_writing(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        ),
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    cancelled = runner.invoke(app, ["setup-ignore"], input="n\n")
+
+    assert cancelled.exit_code == 1
+    assert "Setup ignore cancelled" in cancelled.output
+    assert not excludes_path.exists()
+
+    confirmed = runner.invoke(app, ["setup-ignore"], input="y\n")
+
+    assert confirmed.exit_code == 0
+    assert excludes_path.read_text() == "# Ralph agent files\n.agent/\n"
+
+
+def test_setup_ignore_is_idempotent_and_does_not_backfill_comment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    excludes_path.parent.mkdir()
+    excludes_path.write_text(".agent/\n")
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore"])
+
+    assert result.exit_code == 0
+    assert "already contains this pattern" in result.output
+    assert excludes_path.read_text() == ".agent/\n"
+
+
+def test_setup_ignore_appends_when_only_whitespace_padded_pattern_exists(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    excludes_path.parent.mkdir()
+    excludes_path.write_text("  .agent/  \n")
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Updated Git global excludes" in result.output
+    assert excludes_path.read_text() == (
+        "  .agent/  \n# Ralph agent files\n.agent/\n"
+    )
+
+
+def test_setup_ignore_uses_configured_agent_files_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    excludes_path = tmp_path / "git" / "ignore"
+    base_config = build_single_repo_config(
+        repo_path=tmp_path / "missing-product",
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        replace(
+            base_config,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=0,
+            stdout=f"{excludes_path}\n",
+            stderr="",
+        )
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Ignore pattern: .ralph-agent/" in result.output
+    assert excludes_path.read_text() == "# Ralph agent files\n.ralph-agent/\n"
+
+
+def test_setup_ignore_falls_back_to_standard_global_excludes_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    home = tmp_path / "home"
+    write_config(
+        build_single_repo_config(
+            repo_path=tmp_path / "missing-product",
+            worktree_root=tmp_path / "worktrees",
+            base_ref="origin/main",
+            jira_project="YT",
+            gitlab_project="group/product",
+            repo_name="product",
+        ),
+        config_path,
+    )
+    fake_runner = FakeCommandRunner(
+        CommandResult(
+            args=("git", "config", "--global", "--path", "core.excludesfile"),
+            returncode=1,
+            stdout="",
+            stderr="",
+        )
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.CommandRunner", lambda: fake_runner)
+
+    result = runner.invoke(app, ["setup-ignore", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert str(home / ".config" / "git" / "ignore") in result.output
+
+
 def test_start_rejects_ticket_outside_configured_jira_project(
     tmp_path: Path,
     monkeypatch,

@@ -77,6 +77,7 @@ GITHUB_LATEST_RELEASE_URL = (
     "https://api.github.com/repos/tomaskub/ralph/releases/latest"
 )
 SEMVER_TAG_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+RALPH_AGENT_FILES_IGNORE_COMMENT = "# Ralph agent files"
 
 
 class NotImplementedCommand(RuntimeError):
@@ -278,6 +279,60 @@ def doctor() -> None:
     _render_doctor_checks(checks)
     if any(not check.ok for check in checks):
         raise typer.Exit(code=1)
+
+
+@app.command()
+def setup_ignore(
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Append without asking for confirmation."),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Preview the Git global excludes update."),
+    ] = False,
+) -> None:
+    """Add the configured agent files directory to Git global excludes."""
+    try:
+        config = load_config(DEFAULT_CONFIG_PATH)
+    except ConfigError as exc:
+        console.print(f"[red]Config error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    runner = CommandRunner()
+    excludes_path = _resolve_global_excludes_path(runner)
+    pattern = f"{config.agent_files.directory}/"
+    parent_will_be_created = not excludes_path.parent.exists()
+    file_exists = excludes_path.exists()
+
+    console.print(f"Git global excludes path: {excludes_path}")
+    console.print(f"Ralph comment: {RALPH_AGENT_FILES_IGNORE_COMMENT}")
+    console.print(f"Ignore pattern: {pattern}")
+    console.print(f"File exists: {_format_yes_no(file_exists)}")
+    console.print(
+        "Parent directories "
+        f"{'would be created' if dry_run else 'will be created'}: "
+        f"{_format_yes_no(parent_will_be_created)}"
+    )
+
+    if _global_excludes_has_pattern(excludes_path, pattern):
+        console.print(
+            "[green]Git global excludes already contains this pattern.[/green]"
+        )
+        return
+
+    if dry_run:
+        console.print(
+            "[green]Dry run only; Git global excludes was not changed.[/green]"
+        )
+        return
+
+    if not yes and not typer.confirm("Append Ralph ignore pattern?"):
+        console.print("[yellow]Setup ignore cancelled.[/yellow]")
+        raise typer.Exit(code=1)
+
+    _append_global_excludes_pattern(excludes_path, pattern)
+    console.print("[green]Updated Git global excludes.[/green]")
 
 
 @app.command()
@@ -619,6 +674,35 @@ def _format_worktree_state(state: str) -> str:
     if state == "dirty":
         return "[yellow]dirty[/yellow]"
     return "[red]missing[/red]"
+
+
+def _format_yes_no(value: bool) -> str:
+    return "yes" if value else "no"
+
+
+def _resolve_global_excludes_path(runner: CommandRunner) -> Path:
+    result = runner.run(["git", "config", "--global", "--path", "core.excludesfile"])
+    if result.returncode == 0 and result.stdout.strip():
+        return Path(result.stdout.strip()).expanduser()
+    return Path("~/.config/git/ignore").expanduser()
+
+
+def _global_excludes_has_pattern(path: Path, pattern: str) -> bool:
+    if not path.exists():
+        return False
+    for line in path.read_text().splitlines():
+        if line and not line.lstrip().startswith("#") and line == pattern:
+            return True
+    return False
+
+
+def _append_global_excludes_pattern(path: Path, pattern: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text() if path.exists() else ""
+    prefix = existing
+    if prefix and not prefix.endswith("\n"):
+        prefix += "\n"
+    path.write_text(f"{prefix}{RALPH_AGENT_FILES_IGNORE_COMMENT}\n{pattern}\n")
 
 
 def _check_start_availability(
