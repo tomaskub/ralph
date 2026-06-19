@@ -884,6 +884,60 @@ def test_finish_pushes_branch_creates_draft_mr_and_updates_state(
     assert state["mr_url"] == "https://gitlab.example/mr/1"
 
 
+def test_finish_reads_mr_files_from_alternate_agent_files_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, origin, base_sha = make_finish_worktree(tmp_path)
+    ignore_alternate_agent_files(worktree)
+    (worktree / ".agent" / "mr_description.md").write_text("TODO: wrong directory\n")
+    alternate_dir = worktree / ".ralph-agent"
+    alternate_dir.mkdir()
+    (alternate_dir / "mr_title.md").write_text("YT-123: Alternate agent files\n")
+    (alternate_dir / "mr_description.md").write_text(
+        "Ticket: YT-123\n\nVerification: pytest\n"
+    )
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    glab = fake_glab(
+        tmp_path,
+        list_json="[]",
+        create_output="https://gitlab.example/mr/alternate\n",
+    )
+    base_config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=base_config.default_repo,
+            repos=base_config.repos,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+            tools=ToolConfig(gitlab=f"{sys.executable} {glab}"),
+            branch_kinds=base_config.branch_kinds,
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 0, result.output
+    assert "https://gitlab.example/mr/alternate" in result.output
+    assert run_git_stdout(
+        origin, "show-ref", "--verify", "refs/heads/feature/YT-123-add-cache"
+    )
+
+
 def test_finish_refuses_committed_agent_files(
     tmp_path: Path,
     monkeypatch,
@@ -914,7 +968,105 @@ def test_finish_refuses_committed_agent_files(
     result = runner.invoke(app, ["finish", "YT-123"])
 
     assert result.exit_code == 1
-    assert "Committed diff includes .agent/ files" in result.output
+    assert "Committed diff includes agent files under .agent/" in result.output
+
+
+def test_finish_refuses_committed_configured_agent_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin, base_sha = make_finish_worktree(tmp_path)
+    ignore_alternate_agent_files(worktree)
+    alternate_dir = worktree / ".ralph-agent"
+    alternate_dir.mkdir()
+    (alternate_dir / "mr_title.md").write_text("YT-123: Add cache\n")
+    (alternate_dir / "mr_description.md").write_text(
+        "Ticket: YT-123\n\nVerification: pytest\n"
+    )
+    run_git(worktree, "add", "-f", ".ralph-agent/mr_title.md")
+    run_git(worktree, "commit", "-m", "Commit configured agent file")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    base_config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=base_config.default_repo,
+            repos=base_config.repos,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+            branch_kinds=base_config.branch_kinds,
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 1
+    assert "Committed diff includes agent files under .ralph-agent/, .agent/" in (
+        result.output
+    )
+    assert ".ralph-agent/mr_title.md" in result.output
+
+
+def test_finish_refuses_committed_legacy_agent_files_with_alternate_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo, worktree, _origin, base_sha = make_finish_worktree(tmp_path)
+    ignore_alternate_agent_files(worktree)
+    alternate_dir = worktree / ".ralph-agent"
+    alternate_dir.mkdir()
+    (alternate_dir / "mr_title.md").write_text("YT-123: Add cache\n")
+    (alternate_dir / "mr_description.md").write_text(
+        "Ticket: YT-123\n\nVerification: pytest\n"
+    )
+    run_git(worktree, "add", "-f", ".agent/mr_title.md")
+    run_git(worktree, "commit", "-m", "Commit legacy agent file")
+    state_dir = tmp_path / "state" / "ralph"
+    config_path = tmp_path / "config.toml"
+    base_config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=tmp_path / "worktrees",
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=base_config.default_repo,
+            repos=base_config.repos,
+            agent_files=AgentFilesConfig(directory=".ralph-agent"),
+            branch_kinds=base_config.branch_kinds,
+        ),
+        config_path,
+    )
+    write_run_state(
+        run_state("YT-123", "Add cache", worktree, "started", base_sha=base_sha),
+        state_dir=state_dir,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["finish", "YT-123"])
+
+    assert result.exit_code == 1
+    assert "Committed diff includes agent files under .ralph-agent/, .agent/" in (
+        result.output
+    )
+    assert ".agent/mr_title.md" in result.output
 
 
 def test_finish_records_existing_mr_and_refuses_duplicate_creation(
@@ -1422,6 +1574,13 @@ def make_finish_worktree(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "Ticket: YT-123\n\nVerification: pytest\n"
     )
     return repo, worktree, origin, base_sha
+
+
+def ignore_alternate_agent_files(worktree: Path) -> None:
+    with (worktree / ".gitignore").open("a") as file:
+        file.write(".ralph-agent/\n")
+    run_git(worktree, "add", ".gitignore")
+    run_git(worktree, "commit", "-m", "Ignore alternate agent files")
 
 
 def make_cleanup_worktree(tmp_path: Path) -> tuple[Path, Path, Path]:
