@@ -5,9 +5,9 @@
 RALPH is at `0.4.0`.
 
 The current product is a local operator CLI for one ticket run at a time. It
-creates an isolated worktree and branch, writes focused `.agent/` files, tracks
-local run state, and publishes an already-committed branch as a draft merge
-request.
+creates an isolated worktree and branch, writes focused files in the configured
+agent files directory, tracks local run state, and publishes an already-committed
+branch as a draft merge request.
 
 The MVP PRD remains the baseline contract for the first stable loop. This
 roadmap describes where Ralph should grow next without weakening the core rule:
@@ -54,12 +54,13 @@ Ralph should make the local execution loop fast and predictable.
 
 ### 1. Setup Friction and Git Global Excludes
 
-Ralph currently requires product repositories to ignore `.agent/`. That makes
-Ralph's local operator context leak into each product repo's setup.
-
-Ralph should add an operator-wide `[agent_files]` directory setting and a
+Ralph supports an operator-wide `[agent_files]` directory setting and a
 separate `ralph setup-ignore` command that can add that directory to Git global
-excludes. See [Git Global Excludes PRD](prd-git-global-excludes.md) for the
+excludes.
+
+With Git global excludes configured, product repositories do not need
+Ralph-specific `.gitignore` entries. `.agent` remains the default agent files
+directory. See [Git Global Excludes PRD](prd-git-global-excludes.md) for the
 full 0.4.0 feature spec.
 
 ### 2. Configurable Review Publishing
@@ -246,9 +247,10 @@ Checks:
 - Worktree exists and is on the expected branch.
 - Worktree is clean.
 - Branch has commits ahead of the recorded base SHA.
-- Committed diff does not include `.agent/`.
+- Committed diff does not include the configured agent files directory.
 - Review title and description files are valid.
-- `.agent/status.md` has been updated from the initial template.
+- `status.md` in the configured agent files directory has been updated from the
+  initial template.
 - Optional configured verification commands pass.
 
 Config sketch:
