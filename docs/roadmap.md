@@ -247,9 +247,10 @@ Checks:
 - Worktree exists and is on the expected branch.
 - Worktree is clean.
 - Branch has commits ahead of the recorded base SHA.
-- Committed diff does not include `.agent/`.
+- Committed diff does not include the configured agent files directory.
 - Review title and description files are valid.
-- `.agent/status.md` has been updated from the initial template.
+- `status.md` in the configured agent files directory has been updated from the
+  initial template.
 - Optional configured verification commands pass.
 
 Config sketch:
