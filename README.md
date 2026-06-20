@@ -265,7 +265,7 @@ Use `#123` or `https://github.com/tomaskub/ralph/issues/123` references under
 `## Blocked by` for machine-checkable dependencies. Keep scoped but blocked
 agent work in `Backlog`; `Ready` means an agent can pick it up now.
 
-Because the project is user-owned, the workflow may need a repository secret
+Because the project is user-owned, the workflow requires a repository secret
 named `PROJECT_TOKEN` with GitHub Project write access. The script can be tested
 locally without moving anything:
 

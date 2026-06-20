@@ -30,11 +30,18 @@ jobs:
     name: Move unblocked Backlog issues to Ready
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN || github.token }}
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Verify Project token
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::PROJECT_TOKEN repository secret is required to edit the user-owned GitHub Project."
+            exit 1
+          fi
 
       - name: Move unblocked issues
         run: |

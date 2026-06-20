@@ -12,6 +12,7 @@ from typing import Any
 DEFAULT_OWNER = "tomaskub"
 DEFAULT_REPO = "tomaskub/ralph"
 DEFAULT_PROJECT_NUMBER = 2
+DEFAULT_PROJECT_ID = "PVT_kwHOAHb4Cc4Ba3EA"
 DEFAULT_BACKLOG_STATUS = "Backlog"
 DEFAULT_READY_STATUS = "Ready"
 DEFAULT_READY_LABEL = "ready-for-agent"
@@ -44,6 +45,13 @@ def run_gh(args: list[str]) -> Any:
     if not output:
         return None
     return json.loads(output)
+
+
+def run_graphql(query: str, variables: dict[str, str]) -> Any:
+    args = ["api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        args.extend(["-f", f"{key}={value}"])
+    return run_gh(args)
 
 
 def blocked_by_issue_numbers(body: str) -> set[int]:
@@ -116,72 +124,125 @@ def load_closed_issue_numbers(repo: str) -> set[int]:
     return {issue["number"] for issue in raw_issues}
 
 
-def load_project_items(owner: str, project_number: int) -> dict[int, ProjectItem]:
-    raw_items = run_gh(
-        [
-            "project",
-            "item-list",
-            str(project_number),
-            "--owner",
-            owner,
-            "--format",
-            "json",
-            "--limit",
-            "1000",
-        ]
-    )
-
+def project_items_from_graphql(payload: dict[str, Any], repo: str) -> dict[int, ProjectItem]:
+    project = payload["data"]["node"]
     items: dict[int, ProjectItem] = {}
-    for item in raw_items["items"]:
+    for item in project["items"]["nodes"]:
         content = item.get("content") or {}
-        if content.get("type") != "Issue" or "number" not in content:
+        repository = content.get("repository") or {}
+        if content.get("__typename") != "Issue" or repository.get("nameWithOwner") != repo:
             continue
+
+        status = None
+        for field_value in item["fieldValues"]["nodes"]:
+            field = field_value.get("field") or {}
+            if (
+                field_value.get("__typename") == "ProjectV2ItemFieldSingleSelectValue"
+                and field.get("name") == "Status"
+            ):
+                status = field_value["name"]
+                break
+
         items[content["number"]] = ProjectItem(
             issue_number=content["number"],
             item_id=item["id"],
-            status=item.get("status"),
+            status=status,
         )
     return items
 
 
-def load_project_status_metadata(
-    owner: str,
-    project_number: int,
-    ready_status: str,
-) -> tuple[str, str, str]:
-    project = run_gh(
-        [
-            "project",
-            "view",
-            str(project_number),
-            "--owner",
-            owner,
-            "--format",
-            "json",
-        ]
-    )
-    fields = run_gh(
-        [
-            "project",
-            "field-list",
-            str(project_number),
-            "--owner",
-            owner,
-            "--format",
-            "json",
-        ]
+def load_project_items(repo: str, project_id: str) -> dict[int, ProjectItem]:
+    query = """
+query($projectId: ID!) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      items(first: 100) {
+        nodes {
+          id
+          content {
+            __typename
+            ... on Issue {
+              number
+              repository {
+                nameWithOwner
+              }
+            }
+          }
+          fieldValues(first: 20) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                field {
+                  ... on ProjectV2SingleSelectField {
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+    return project_items_from_graphql(
+        run_graphql(query, {"projectId": project_id}),
+        repo=repo,
     )
 
-    for field in fields["fields"]:
-        if field["name"] != "Status":
+
+def status_metadata_from_graphql(
+    payload: dict[str, Any],
+    project_id: str,
+    ready_status: str,
+) -> tuple[str, str, str]:
+    project = payload["data"]["node"]
+    for field in project["fields"]["nodes"]:
+        if field.get("__typename") != "ProjectV2SingleSelectField":
+            continue
+        if field.get("name") != "Status":
             continue
         for option in field.get("options", []):
             if option["name"] == ready_status:
-                return project["id"], field["id"], option["id"]
+                return project_id, field["id"], option["id"]
         msg = f"Project Status field has no {ready_status!r} option"
         raise SystemExit(msg)
 
     raise SystemExit("Project has no Status field")
+
+
+def load_project_status_metadata(
+    project_id: str,
+    ready_status: str,
+) -> tuple[str, str, str]:
+    query = """
+query($projectId: ID!) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      fields(first: 50) {
+        nodes {
+          __typename
+          ... on ProjectV2SingleSelectField {
+            id
+            name
+            options {
+              id
+              name
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+    return status_metadata_from_graphql(
+        run_graphql(query, {"projectId": project_id}),
+        project_id=project_id,
+        ready_status=ready_status,
+    )
 
 
 def dependency_is_done(issue_number: int, closed_issue_numbers: set[int]) -> bool:
@@ -228,19 +289,35 @@ def move_issue_to_ready(
     if ready_label not in issue.labels:
         run_gh(["issue", "edit", str(issue.number), "--repo", repo, "--add-label", ready_label])
 
-    run_gh(
-        [
-            "project",
-            "item-edit",
-            "--id",
-            project_item_id,
-            "--project-id",
-            project_id,
-            "--field-id",
-            status_field_id,
-            "--single-select-option-id",
-            ready_option_id,
-        ]
+    query = """
+mutation(
+  $projectId: ID!
+  $itemId: ID!
+  $fieldId: ID!
+  $optionId: String!
+) {
+  updateProjectV2ItemFieldValue(
+    input: {
+      projectId: $projectId
+      itemId: $itemId
+      fieldId: $fieldId
+      value: { singleSelectOptionId: $optionId }
+    }
+  ) {
+    projectV2Item {
+      id
+    }
+  }
+}
+"""
+    run_graphql(
+        query,
+        {
+            "projectId": project_id,
+            "itemId": project_item_id,
+            "fieldId": status_field_id,
+            "optionId": ready_option_id,
+        },
     )
     print("  moved to Ready")
 
@@ -255,6 +332,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--owner", default=DEFAULT_OWNER)
     parser.add_argument("--repo", default=DEFAULT_REPO)
     parser.add_argument("--project-number", type=int, default=DEFAULT_PROJECT_NUMBER)
+    parser.add_argument("--project-id", default=DEFAULT_PROJECT_ID)
     parser.add_argument("--backlog-status", default=DEFAULT_BACKLOG_STATUS)
     parser.add_argument("--ready-status", default=DEFAULT_READY_STATUS)
     parser.add_argument("--ready-label", default=DEFAULT_READY_LABEL)
@@ -266,7 +344,7 @@ def main() -> None:
     args = parse_args()
     open_issues = load_open_issues(args.repo)
     closed_issue_numbers = load_closed_issue_numbers(args.repo)
-    project_items = load_project_items(args.owner, args.project_number)
+    project_items = load_project_items(args.repo, args.project_id)
     candidates = ready_candidates(
         open_issues=open_issues,
         closed_issue_numbers=closed_issue_numbers,
@@ -279,8 +357,7 @@ def main() -> None:
         return
 
     project_id, status_field_id, ready_option_id = load_project_status_metadata(
-        owner=args.owner,
-        project_number=args.project_number,
+        project_id=args.project_id,
         ready_status=args.ready_status,
     )
     for issue in candidates:
