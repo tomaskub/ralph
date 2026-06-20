@@ -1,0 +1,45 @@
+name: Unblock ready issues
+
+on:
+  issues:
+    types:
+      - closed
+      - edited
+      - labeled
+      - unlabeled
+      - reopened
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Print candidates without moving issues"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    - cron: "0 6 * * *"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  unblock:
+    name: Move unblocked Backlog issues to Ready
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.PROJECT_TOKEN || github.token }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Move unblocked issues
+        run: |
+          args=()
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          scripts/unblock-ready-issues "${args[@]}"
