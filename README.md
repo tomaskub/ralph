@@ -155,7 +155,7 @@ This finds the latest stable GitHub release/tag and reinstalls that exact ref
 with pipx, equivalent to:
 
 ```bash
-pipx install --force "git+https://github.com/tomaskub/ralph.git@<latest-tag>"
+UV_VENV_CLEAR=1 pipx install --force "git+https://github.com/tomaskub/ralph.git@<latest-tag>"
 ```
 
 To install a specific tag manually:

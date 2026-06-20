@@ -75,8 +75,9 @@ def test_update_installs_latest_github_release_tag(monkeypatch) -> None:
         "git+https://github.com/tomaskub/ralph.git@0.2.0",
     )
     assert fake_runner.args_history == [fake_runner.args]
+    assert fake_runner.env_history == [{"UV_VENV_CLEAR": "1"}]
     assert (
-        "Updating RALPH with: pipx install --force "
+        "Updating RALPH with: UV_VENV_CLEAR=1 pipx install --force "
         "git+https://github.com/tomaskub/ralph.git@0.2.0"
     ) in result.output
     assert "installed" in result.output
@@ -124,6 +125,7 @@ def test_update_falls_back_to_latest_git_semver_tag(monkeypatch) -> None:
             "git+https://github.com/tomaskub/ralph.git@0.2.0",
         ),
     ]
+    assert fake_runner.env_history == [None, {"UV_VENV_CLEAR": "1"}]
     assert "RALPH is up to date at 0.2.0." in result.output
 
 
@@ -167,6 +169,7 @@ def test_update_tag_option_skips_latest_tag_discovery(monkeypatch) -> None:
             "git+https://example.test/ralph.git@0.1.0",
         )
     ]
+    assert fake_runner.env_history == [{"UV_VENV_CLEAR": "1"}]
 
 
 def test_update_reports_missing_semver_tag(monkeypatch) -> None:
@@ -185,7 +188,7 @@ def test_update_reports_missing_semver_tag(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "Could not find a stable semver GitHub release or tag" in result.output
-    assert "pipx install --force" in result.output
+    assert "UV_VENV_CLEAR=1 pipx install --force" in result.output
     assert "git+https://github.com/tomaskub/ralph.git@<tag>" in result.output
 
 
@@ -212,7 +215,7 @@ def test_update_reports_pipx_install_failure(monkeypatch) -> None:
     assert "RALPH update failed." in result.output
     assert "pipx failed" in result.output
     assert (
-        "Run manually: pipx install --force "
+        "Run manually: UV_VENV_CLEAR=1 pipx install --force "
         "git+https://github.com/tomaskub/ralph.git@0.2.0"
     ) in result.output
 
@@ -1894,10 +1897,12 @@ class FakeCommandRunner:
         self.results = list(results)
         self.args: tuple[str, ...] | None = None
         self.args_history: list[tuple[str, ...]] = []
+        self.env_history: list[dict[str, str] | None] = []
 
-    def run(self, args, cwd=None) -> CommandResult:
+    def run(self, args, cwd=None, env=None) -> CommandResult:
         self.args = tuple(args)
         self.args_history.append(self.args)
+        self.env_history.append(dict(env) if env is not None else None)
         if not self.results:
             raise AssertionError(f"Unexpected command: {self.args}")
         return self.results.pop(0)
