@@ -253,6 +253,26 @@ uv run pytest
 uv build
 ```
 
+### Agent Issue Automation
+
+GitHub Actions also runs `scripts/unblock-ready-issues` when issues change,
+every morning at 06:00 UTC, and on manual dispatch. The script scans open issues in Project
+`tomaskub` number `2`; when a Backlog issue has a `## Blocked by` section and
+every referenced issue is closed, it adds `ready-for-agent` and moves the
+project item to `Ready`.
+
+Use `#123` or `https://github.com/tomaskub/ralph/issues/123` references under
+`## Blocked by` for machine-checkable dependencies. Keep scoped but blocked
+agent work in `Backlog`; `Ready` means an agent can pick it up now.
+
+Because the project is user-owned, the workflow may need a repository secret
+named `PROJECT_TOKEN` with GitHub Project write access. The script can be tested
+locally without moving anything:
+
+```bash
+scripts/unblock-ready-issues --dry-run
+```
+
 ### Main Branch Protection
 
 Configure branch protection for `main` in GitHub repository settings:
