@@ -23,7 +23,7 @@ class ToolConfig:
 
 @dataclass(frozen=True)
 class JiraConfig:
-    issue_json_command: str = "jira issue view {ticket} --format json"
+    issue_json_command: str = "jira issue view {ticket} --raw"
 
 
 @dataclass(frozen=True)

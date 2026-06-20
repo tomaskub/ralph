@@ -42,7 +42,7 @@ def test_load_config_reads_single_default_repo(tmp_path: Path) -> None:
     assert repo.jira_project == "YT"
     assert repo.gitlab_project == "group/product"
     assert loaded.agent_files.directory == ".agent"
-    assert loaded.jira.issue_json_command == "jira issue view {ticket} --format json"
+    assert loaded.jira.issue_json_command == "jira issue view {ticket} --raw"
 
 
 def test_load_config_defaults_agent_files_directory_for_legacy_config(
@@ -112,7 +112,7 @@ def test_config_to_toml_contains_expected_single_repo_shape() -> None:
     assert 'directory = ".agent"' in rendered
     assert "[tools]" in rendered
     assert "[jira]" in rendered
-    assert 'issue_json_command = "jira issue view {ticket} --format json"' in rendered
+    assert 'issue_json_command = "jira issue view {ticket} --raw"' in rendered
     assert "[branch_kinds]" in rendered
 
 
