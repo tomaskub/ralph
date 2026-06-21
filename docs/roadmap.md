@@ -2,7 +2,7 @@
 
 ## Current Baseline
 
-RALPH is at `0.4.0`.
+RALPH is at `0.4.1`.
 
 The current product is a local operator CLI for one ticket run at a time. It
 creates an isolated worktree and branch, writes focused files in the configured
