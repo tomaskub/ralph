@@ -76,6 +76,7 @@ DEFAULT_INSTALL_REPO_URL = "https://github.com/tomaskub/ralph.git"
 GITHUB_LATEST_RELEASE_URL = (
     "https://api.github.com/repos/tomaskub/ralph/releases/latest"
 )
+PIPX_FORCE_REINSTALL_ENV = {"UV_VENV_CLEAR": "1"}
 SEMVER_TAG_PATTERN = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 RALPH_AGENT_FILES_IGNORE_COMMENT = "# Ralph agent files"
 
@@ -137,21 +138,21 @@ def update(
             "for example 0.1.0."
         )
         console.print(
-            f"Install manually once a tag exists: pipx install --force "
+            f"Install manually once a tag exists: UV_VENV_CLEAR=1 pipx install --force "
             f"{shlex.quote(f'git+{repo_url}@<tag>')}"
         )
         raise typer.Exit(code=1)
 
     install_source = f"git+{repo_url}@{selected_tag}"
     args = ("pipx", "install", "--force", install_source)
-    console.print(f"Updating RALPH with: {shlex.join(args)}")
-    result = runner.run(args)
+    console.print(f"Updating RALPH with: {_update_command_text(args)}")
+    result = runner.run(args, env=PIPX_FORCE_REINSTALL_ENV)
     if result.returncode != 0:
         console.print("[red]RALPH update failed.[/red]")
         output = result.stderr.strip() or result.stdout.strip()
         if output:
             console.print(output)
-        console.print(f"Run manually: {shlex.join(args)}")
+        console.print(f"Run manually: {_update_command_text(args)}")
         raise typer.Exit(code=result.returncode)
 
     output = result.stdout.strip()
@@ -176,6 +177,10 @@ def _discover_latest_install_tag(
         return None
 
     return _latest_semver_tag(_tags_from_ls_remote(result.stdout))
+
+
+def _update_command_text(args: tuple[str, ...]) -> str:
+    return f"UV_VENV_CLEAR=1 {shlex.join(args)}"
 
 
 def _latest_github_release_tag() -> str | None:
