@@ -123,12 +123,12 @@ def test_fetch_ticket_json_uses_configured_command_through_runner() -> None:
 
     raw = fetch_ticket_json(
         "YT-123",
-        issue_json_command="jira issue view {ticket} --format json",
+        issue_json_command="jira issue view {ticket} --raw",
         runner=runner,
     )
 
     assert raw["key"] == "YT-123"
-    assert runner.args == ("jira", "issue", "view", "YT-123", "--format", "json")
+    assert runner.args == ("jira", "issue", "view", "YT-123", "--raw")
 
 
 def test_validate_ticket_rejects_wrong_project_status_description_and_type() -> None:

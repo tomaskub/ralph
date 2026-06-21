@@ -290,7 +290,7 @@ description_file = "pr_description.md"
 
 [providers.jira]
 project = "YT"
-issue_json_command = "jira issue view {ticket} --format json"
+issue_json_command = "jira issue view {ticket} --raw"
 
 [providers.github]
 repo = "owner/product"

@@ -144,7 +144,7 @@ gitlab = "glab"
 agent = "claude"
 
 [jira]
-issue_json_command = "jira issue view {ticket} --format json"
+issue_json_command = "jira issue view {ticket} --raw"
 
 [branch_kinds]
 Task = "feature"
