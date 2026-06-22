@@ -865,6 +865,77 @@ def test_start_creates_worktree_agent_files_state_and_launches_agent(
     assert "raw" in state["ticket"]
 
 
+def test_start_real_run_normalizes_relative_repo_and_worktree_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    repo = make_git_repo(workspace)
+    (repo / ".gitignore").write_text(".agent/\n")
+    run_git(repo, "add", ".gitignore")
+    run_git(repo, "commit", "-m", "Ignore agent files")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    worktree_root = workspace / "worktrees"
+    worktree_root.mkdir()
+    fixture = tmp_path / "jira-ticket.json"
+    fixture.write_text(json.dumps(jira_ticket_json()))
+    printer = tmp_path / "print_jira.py"
+    printer.write_text(
+        "import pathlib\n"
+        f"print(pathlib.Path({str(fixture)!r}).read_text())\n"
+    )
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import pathlib\n"
+        "pathlib.Path('agent-ran.txt').write_text('yes')\n"
+    )
+    config_path.write_text(
+        f"""
+default_repo = "product"
+
+[repos.product]
+repo_path = "workspace/product"
+worktree_root = "workspace/worktrees"
+base_ref = "origin/main"
+git_remote = "origin"
+jira_project = "YT"
+gitlab_project = "group/product"
+
+[tools]
+agent = "{sys.executable} {agent}"
+
+[jira]
+issue_json_command = "{sys.executable} {printer} {{ticket}}"
+"""
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    dry_run = runner.invoke(app, ["start", "YT-123", "--dry-run"])
+    result = runner.invoke(app, ["start", "YT-123"])
+
+    worktree = worktree_root / "feature__YT-123-add-cache"
+    assert dry_run.exit_code == 0, dry_run.output
+    assert str(worktree) in dry_run.output.replace("\n", "")
+    assert result.exit_code == 0, result.output
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert worktree.exists()
+    assert (worktree / ".agent" / "task.md").read_text() == "# YT-123\n\nAdd cache\n\n"
+    assert (worktree / "agent-ran.txt").read_text() == "yes"
+    assert state["repo_path"] == str(repo)
+    assert state["worktree_path"] == str(worktree)
+    assert str(worktree) in state["command_log"][1]
+    assert "Started ticket run" in result.output
+
+
 def test_start_writes_configured_agent_files_directory(
     tmp_path: Path,
     monkeypatch,

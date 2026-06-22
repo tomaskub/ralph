@@ -180,11 +180,13 @@ def build_single_repo_config(
     gitlab_project: str,
     repo_name: str | None = None,
 ) -> RalphConfig:
-    name = repo_name or repo_path.expanduser().resolve().name
+    repo_path = _normalize_config_path(repo_path)
+    worktree_root = _normalize_config_path(worktree_root)
+    name = repo_name or repo_path.name
     repo = RepoConfig(
         name=name,
-        repo_path=repo_path.expanduser(),
-        worktree_root=worktree_root.expanduser(),
+        repo_path=repo_path,
+        worktree_root=worktree_root,
         base_ref=base_ref or DEFAULT_BASE_REF,
         git_remote=DEFAULT_GIT_REMOTE,
         jira_project=jira_project,
@@ -219,8 +221,8 @@ def validate_init_inputs(
 ) -> list[str]:
     runner = runner or CommandRunner()
     errors: list[str] = []
-    repo_path = repo_path.expanduser()
-    worktree_root = worktree_root.expanduser()
+    repo_path = _normalize_config_path(repo_path)
+    worktree_root = _normalize_config_path(worktree_root)
 
     if not base_ref:
         errors.append("Base ref is required")
@@ -326,13 +328,17 @@ def _repo_config_from_toml(name: str, data: dict[str, object]) -> RepoConfig:
 
     return RepoConfig(
         name=name,
-        repo_path=Path(str(data["repo_path"])).expanduser(),
-        worktree_root=Path(str(data["worktree_root"])).expanduser(),
+        repo_path=_normalize_config_path(Path(str(data["repo_path"]))),
+        worktree_root=_normalize_config_path(Path(str(data["worktree_root"]))),
         base_ref=str(data.get("base_ref", DEFAULT_BASE_REF)),
         git_remote=str(data.get("git_remote", DEFAULT_GIT_REMOTE)),
         jira_project=str(data.get("jira_project", "")),
         gitlab_project=str(data.get("gitlab_project", "")),
     )
+
+
+def _normalize_config_path(path: Path) -> Path:
+    return path.expanduser().resolve()
 
 
 def _path_to_config_value(path: Path) -> str:
