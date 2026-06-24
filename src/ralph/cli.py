@@ -849,7 +849,10 @@ def _start_real_run(
             command_log=command_log,
         )
         state_path = write_run_state(state, state_dir=DEFAULT_STATE_DIR)
-        _run_agent_command(agent_command, cwd=worktree_path)
+        bootstrap_prompt = (
+            worktree_path / agent_files_directory / "bootstrap-prompt.md"
+        ).read_text()
+        _run_agent_command(agent_command, cwd=worktree_path, prompt=bootstrap_prompt)
     except Exception as exc:
         state = _run_state(
             ticket=ticket,
@@ -894,12 +897,12 @@ def _write_agent_files(
         (root / relative_path).write_text(content)
 
 
-def _run_agent_command(command: str, *, cwd: Path) -> CommandResult:
+def _run_agent_command(command: str, *, cwd: Path, prompt: str) -> CommandResult:
     args = shlex.split(command)
     if not args:
         raise GitPlanError("Configured agent command is empty")
 
-    result = CommandRunner().run(args, cwd=cwd)
+    result = CommandRunner().run(args, cwd=cwd, input=prompt)
     if result.returncode != 0:
         detail = result.stderr.strip()
         suffix = f": {detail}" if detail else ""
