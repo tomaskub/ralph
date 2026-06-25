@@ -23,12 +23,14 @@ class CommandRunner:
         args: Sequence[str],
         cwd: Path | None = None,
         env: Mapping[str, str] | None = None,
+        input: str | None = None,
     ) -> CommandResult:
         subprocess_env = None if env is None else {**os.environ, **env}
         completed = subprocess.run(
             list(args),
             cwd=cwd,
             env=subprocess_env,
+            input=input,
             check=False,
             capture_output=True,
             text=True,

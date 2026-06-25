@@ -814,8 +814,8 @@ def test_start_creates_worktree_agent_files_state_and_launches_agent(
     )
     agent = tmp_path / "agent.py"
     agent.write_text(
-        "import pathlib\n"
-        "pathlib.Path('agent-ran.txt').write_text('yes')\n"
+        "import pathlib, sys\n"
+        "pathlib.Path('agent-ran.txt').write_text(sys.stdin.read())\n"
     )
     config = build_single_repo_config(
         repo_path=repo,
@@ -854,7 +854,12 @@ def test_start_creates_worktree_agent_files_state_and_launches_agent(
     assert (worktree / ".agent" / "context.md").read_text() == (
         "# RALPH Context\n\nBranch: feature/YT-123-add-cache\n\n"
     )
-    assert (worktree / "agent-ran.txt").read_text() == "yes"
+    assert (worktree / "agent-ran.txt").read_text() == (
+        worktree / ".agent" / "bootstrap-prompt.md"
+    ).read_text()
+    assert "Read `.agent/task.md` and `.agent/context.md`" in (
+        worktree / "agent-ran.txt"
+    ).read_text()
     assert state["ticket_key"] == "YT-123"
     assert state["repo_name"] == "product"
     assert state["status"] == "started"
@@ -893,8 +898,8 @@ def test_start_real_run_normalizes_relative_repo_and_worktree_paths(
     )
     agent = tmp_path / "agent.py"
     agent.write_text(
-        "import pathlib\n"
-        "pathlib.Path('agent-ran.txt').write_text('yes')\n"
+        "import pathlib, sys\n"
+        "pathlib.Path('agent-ran.txt').write_text(sys.stdin.read())\n"
     )
     config_path.write_text(
         f"""
@@ -929,11 +934,87 @@ issue_json_command = "{sys.executable} {printer} {{ticket}}"
     state = json.loads((state_dir / "product" / "YT-123.json").read_text())
     assert worktree.exists()
     assert (worktree / ".agent" / "task.md").read_text() == "# YT-123\n\nAdd cache\n\n"
-    assert (worktree / "agent-ran.txt").read_text() == "yes"
+    assert (worktree / "agent-ran.txt").read_text() == (
+        worktree / ".agent" / "bootstrap-prompt.md"
+    ).read_text()
+    assert "Read `.agent/task.md` and `.agent/context.md`" in (
+        worktree / "agent-ran.txt"
+    ).read_text()
     assert state["repo_path"] == str(repo)
     assert state["worktree_path"] == str(worktree)
     assert str(worktree) in state["command_log"][1]
     assert "Started ticket run" in result.output
+
+
+def test_start_persists_needs_attention_when_agent_command_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    repo = make_git_repo(tmp_path)
+    (repo / ".gitignore").write_text(".agent/\n")
+    run_git(repo, "add", ".gitignore")
+    run_git(repo, "commit", "-m", "Ignore agent files")
+    origin = tmp_path / "origin.git"
+    run_git(tmp_path, "init", "--bare", str(origin))
+    run_git(repo, "remote", "set-url", "origin", str(origin))
+    run_git(repo, "push", "-u", "origin", "main")
+
+    config_path = tmp_path / "config.toml"
+    state_dir = tmp_path / "state" / "ralph"
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    fixture = tmp_path / "jira-ticket.json"
+    fixture.write_text(json.dumps(jira_ticket_json()))
+    printer = tmp_path / "print_jira.py"
+    printer.write_text(
+        "import pathlib\n"
+        f"print(pathlib.Path({str(fixture)!r}).read_text())\n"
+    )
+    agent = tmp_path / "agent.py"
+    agent.write_text(
+        "import sys\n"
+        "assert sys.stdin.read()\n"
+        "print('agent exploded', file=sys.stderr)\n"
+        "raise SystemExit(7)\n"
+    )
+    config = build_single_repo_config(
+        repo_path=repo,
+        worktree_root=worktree_root,
+        base_ref="origin/main",
+        jira_project="YT",
+        gitlab_project="group/product",
+        repo_name="product",
+    )
+    write_config(
+        RalphConfig(
+            default_repo=config.default_repo,
+            repos=config.repos,
+            tools=ToolConfig(agent=f"{sys.executable} {agent}"),
+            jira=JiraConfig(
+                issue_json_command=f"{sys.executable} {printer} {{ticket}}"
+            ),
+            branch_kinds=config.branch_kinds,
+        ),
+        config_path,
+    )
+    monkeypatch.setattr("ralph.cli.DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr("ralph.cli.DEFAULT_STATE_DIR", state_dir)
+
+    result = runner.invoke(app, ["start", "YT-123"])
+
+    branch = "feature/YT-123-add-cache"
+    worktree = worktree_root / "feature__YT-123-add-cache"
+    state = json.loads((state_dir / "product" / "YT-123.json").read_text())
+    assert result.exit_code == 1
+    assert "Start needs manual attention" in result.output
+    assert run_git_stdout(repo, "show-ref", "--verify", f"refs/heads/{branch}")
+    assert worktree.exists()
+    assert (worktree / ".agent" / "bootstrap-prompt.md").exists()
+    assert state["status"] == "needs-attention"
+    assert state["error"] == "Agent command failed: agent exploded"
+    assert state["repo_path"] == str(repo)
+    assert state["worktree_path"] == str(worktree)
+    assert str(worktree) in state["command_log"][1]
 
 
 def test_start_writes_configured_agent_files_directory(
@@ -962,8 +1043,8 @@ def test_start_writes_configured_agent_files_directory(
     )
     agent = tmp_path / "agent.py"
     agent.write_text(
-        "import pathlib\n"
-        "pathlib.Path('agent-ran.txt').write_text('yes')\n"
+        "import pathlib, sys\n"
+        "pathlib.Path('agent-ran.txt').write_text(sys.stdin.read())\n"
     )
     config = build_single_repo_config(
         repo_path=repo,
@@ -1000,7 +1081,12 @@ def test_start_writes_configured_agent_files_directory(
     assert "Read `.ralph-agent/task.md` and `.ralph-agent/context.md`" in (
         agent_dir / "bootstrap-prompt.md"
     ).read_text()
-    assert (worktree / "agent-ran.txt").read_text() == "yes"
+    assert (worktree / "agent-ran.txt").read_text() == (
+        agent_dir / "bootstrap-prompt.md"
+    ).read_text()
+    assert "Read `.ralph-agent/task.md` and `.ralph-agent/context.md`" in (
+        worktree / "agent-ran.txt"
+    ).read_text()
 
 
 def test_start_persists_needs_attention_after_worktree_creation_failure(
